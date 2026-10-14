@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ChatGPT画像生成用の2D人体ポーズ参照画像を作成するローカルツール">
+  <title>ChatGPT用ポーズリファレンス画像作成ツール</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-block">
+      <h1>ChatGPT用ポーズリファレンス画像作成ツール</h1>
+      <button id="showCoordinatesButton" class="button button-ghost coordinates-restore-button" type="button" aria-controls="coordinatesPanel" aria-expanded="false" hidden>関節座標</button>
+    </div>
+    <div class="header-tools">
+      <p class="header-note">関節をドラッグして、ChatGPTに伝わるポーズ資料を作成</p>
+      <button id="helpButton" class="button button-primary help-button" type="button">使い方</button>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <aside class="coordinates-panel" id="coordinatesPanel" aria-labelledby="coordinates-title">
+      <div class="coordinates-heading">
+        <h2 id="coordinates-title">関節座標</h2>
+        <button id="hideCoordinatesButton" class="panel-close-button" type="button" aria-label="関節座標を閉じる" title="関節座標を閉じる">×</button>
+      </div>
+      <p class="coordinate-help">原点(0, 0)は編集エリア左上です。</p>
+      <div class="coordinate-list" id="coordinateControls"></div>
+    </aside>
+
+    <section class="workspace-panel" aria-labelledby="canvas-title">
+      <div class="panel-heading">
+        <div class="workspace-lead">
+          <div class="workspace-heading-copy">
+            <h2 id="canvas-title">編集エリア</h2>
+          </div>
+          <section class="pose-storage-panel" aria-labelledby="pose-storage-title">
+            <h3 id="pose-storage-title">ポーズをセーブ/ロード</h3>
+            <div class="pose-slot-list">
+              <div class="pose-slot-row">
+                <button class="button button-ghost pose-save-button" type="button" data-save-pose="1">セーブ1</button>
+                <button class="button button-ghost pose-save-button" type="button" data-save-pose="2">セーブ2</button>
+                <button class="button button-ghost pose-save-button" type="button" data-save-pose="3">セーブ3</button>
+              </div>
+              <div class="pose-slot-row">
+                <button class="button button-ghost" type="button" data-load-pose="1" disabled>ロード1</button>
+                <button class="button button-ghost" type="button" data-load-pose="2" disabled>ロード2</button>
+                <button class="button button-ghost" type="button" data-load-pose="3" disabled>ロード3</button>
+              </div>
+            </div>
+            <div class="pose-transfer-controls">
+              <div class="pose-transfer-row">
+                <button id="exportPoseButton" class="button button-ghost" type="button">エクスポート</button>
+                <textarea id="poseImportInput" rows="1" maxlength="500000" spellcheck="false" aria-label="エクスポート文字列の貼り付け欄" placeholder="エクスポート文字列を貼り付け"></textarea>
+                <button id="importPoseButton" class="button button-ghost" type="button">インポート</button>
+              </div>
+              <label id="poseExportGroup" class="pose-transfer-field" hidden>エクスポート文字列
+                <textarea id="poseExportOutput" rows="2" readonly spellcheck="false" aria-label="ポーズのエクスポート文字列"></textarea>
+              </label>
+            </div>
+          </section>
+        </div>
+        <div class="canvas-actions">
+          <div class="pose-action-groups">
+            <div class="mode-action-row">
+              <label class="mode-chip">
+                <input id="linkedMove" type="checkbox">
+                <span>左右連動</span>
+              </label>
+              <label class="mode-chip">
+                <input id="symmetricMove" type="checkbox">
+                <span>左右対称</span>
+              </label>
+              <label class="mode-chip">
+                <input id="moveWhole" type="checkbox">
+                <span>全体移動</span>
+              </label>
+            </div>
+            <div class="transform-action-row">
+              <button id="flipHorizontalButton" class="button button-ghost transform-button" type="button" title="ポーズを左右反転します">左右反転</button>
+              <label class="mode-chip rotation-mode-chip" title="Waistを中心にポーズを回転します">
+                <input id="rotatePose" type="checkbox">
+                <span>ポーズ回転</span>
+              </label>
+              <label id="rotationAngleControl" class="rotation-angle-control" hidden>回転角度（°）
+                <input id="rotationAngle" type="number" min="-180" max="180" step="1" value="0" inputmode="decimal">
+              </label>
+            </div>
+            <div class="transform-action-row">
+              <button id="swapSidesButton" class="button button-ghost transform-button" type="button" title="位置を動かさず、腕と脚の色・R/Lを交換します">左右入替</button>
+              <button id="swapArmsButton" class="button button-ghost transform-button" type="button" title="位置を動かさず、腕の色・R/Lだけを交換します">腕だけ</button>
+              <button id="swapLegsButton" class="button button-ghost transform-button" type="button" title="位置を動かさず、脚の色・R/Lだけを交換します">脚だけ</button>
+            </div>
+            <label class="range-control skeleton-scale-control"><span>拡大率</span><output id="skeletonScaleValue">100%</output>
+              <input id="skeletonScale" type="range" min="25" max="300" step="1" value="100">
+            </label>
+          </div>
+          <div class="history-actions">
+            <div class="reset-actions">
+              <button id="resetPoseButton" class="button button-ghost" type="button">ポーズ初期化</button>
+              <button id="resetAllButton" class="button button-ghost danger-button" type="button">全初期化</button>
+            </div>
+            <button id="undoButton" class="button button-ghost" type="button" disabled>操作を戻す</button>
+            <button id="redoButton" class="button button-ghost" type="button" disabled>操作を進める</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="canvas-frame" id="canvasFrame">
+        <div class="canvas-tip-row">
+          <div class="canvas-tip" id="canvasTip"><span aria-hidden="true">↖</span> 関節点をドラッグで移動</div>
+        </div>
+        <div class="canvas-stage" id="canvasStage">
+          <canvas id="poseCanvas" width="720" height="820" aria-label="人体ポーズ編集キャンバス"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <aside class="settings-panel" aria-label="ポーズと出力の設定">
+      <div class="settings-heading">
+        <h2>表示と情報</h2>
+      </div>
+
+      <details class="settings-card" open>
+        <summary><span>見本画像</span><span class="summary-icon">＋</span></summary>
+        <div class="card-content reference-controls">
+          <label class="file-picker">
+            <input id="referenceImageInput" type="file" accept="image/png,image/jpeg,image/webp">
+            <span>PNG・JPEG・WebPを読み込む</span>
+          </label>
+          <div id="referenceImageOptions" class="reference-options" hidden>
+            <label class="toggle-row">
+              <span><b>画像を表示</b><small>表示していても書き出しには含まれません</small></span>
+              <input id="showReferenceImage" type="checkbox" checked>
+              <i aria-hidden="true"></i>
+            </label>
+            <label class="toggle-row">
+              <span><b>画像を移動</b><small>ON時、見本画像をドラッグで移動</small></span>
+              <input id="editReferenceImage" type="checkbox">
+              <i aria-hidden="true"></i>
+            </label>
+            <label class="range-control">不透明度 <output id="referenceOpacityValue">45%</output>
+              <input id="referenceOpacity" type="range" min="0" max="100" value="45">
+            </label>
+            <label class="range-control">拡大率 <output id="referenceScaleValue">100%</output>
+              <input id="referenceScale" type="range" min="25" max="300" value="100">
+            </label>
+            <div class="form-grid compact-fields">
+              <label>位置 X<input id="referenceX" type="number" step="1"></label>
+              <label>位置 Y<input id="referenceY" type="number" step="1"></label>
+            </div>
+            <button id="removeReferenceImage" class="button button-ghost button-full danger-button" type="button">見本画像を削除</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="settings-card">
+        <summary><span>関節ラベルの個別設定</span><span class="summary-icon">＋</span></summary>
+        <div class="card-content">
+          <p class="field-hint">関節ポイントをダブルクリックでも切り替え</p>
+          <div class="mini-actions">
+            <button id="showAllLabels" class="button button-ghost" type="button">すべて表示</button>
+            <button id="hideAllLabels" class="button button-ghost" type="button">すべて非表示</button>
+          </div>
+          <div id="labelControls" class="label-grid"></div>
+        </div>
+      </details>
+
+      <details class="settings-card">
+        <summary><span>手足の追加/削除</span><span class="summary-icon">＋</span></summary>
+        <div class="card-content limb-editor">
+          <div class="limb-add-actions">
+            <button class="button button-ghost" type="button" data-add-limb="rightArm">右腕追加</button>
+            <button class="button button-ghost" type="button" data-add-limb="leftArm">左腕追加</button>
+            <button class="button button-ghost" type="button" data-add-limb="rightLeg">右脚追加</button>
+            <button class="button button-ghost" type="button" data-add-limb="leftLeg">左脚追加</button>
+          </div>
+          <div id="limbControls" class="limb-control-grid"></div>
+          <p class="field-hint">片側につき、元の1本を含めて最大4本まで追加できます。</p>
+        </div>
+      </details>
+
+      <details class="settings-card">
+        <summary><span>前後関係</span><span class="summary-icon">＋</span></summary>
+        <div class="card-content depth-grid" id="depthControls"></div>
+        <p class="field-hint">「奥」は破線かつ薄い色で描画されます。</p>
+      </details>
+
+      <details class="settings-card export-card" open>
+        <summary><span>画像設定と保存</span><span class="summary-icon">＋</span></summary>
+        <div class="card-content">
+          <div class="form-grid">
+            <label>画像サイズ
+              <select id="exportSize">
+                <option value="768x768">768 × 768</option>
+                <option value="1024x1024">1024 × 1024</option>
+                <option value="1024x1536" selected>1024 × 1536（縦長）</option>
+                <option value="1536x1024">1536 × 1024（横長）</option>
+                <option value="custom">任意</option>
+              </select>
+            </label>
+            <label>背景色
+              <select id="exportBackground">
+                <option value="white" selected>白</option>
+                <option value="black">黒</option>
+                <option value="transparent">透明</option>
+              </select>
+            </label>
+          </div>
+          <div id="customSizeFields" class="form-grid custom-size-fields" hidden>
+            <label>幅（px）<input id="customWidth" type="number" min="64" max="4096" step="1" value="1024" inputmode="numeric"></label>
+            <label>高さ（px）<input id="customHeight" type="number" min="64" max="4096" step="1" value="1536" inputmode="numeric"></label>
+          </div>
+          <div class="export-options">
+            <label><input id="exportLabels" type="checkbox" checked> 関節ラベルも含める</label>
+            <label><input id="poseBlack" type="checkbox"> ポーズ黒化</label>
+          </div>
+          <button id="exportButton" class="button button-primary button-full" type="button">
+            <span>画像を保存</span>
+          </button>
+        </div>
+      </details>
+    </aside>
+
+    <section class="prompt-panel" aria-labelledby="prompt-title">
+      <div class="prompt-heading">
+        <div class="prompt-title-row">
+          <h2 id="prompt-title">補助プロンプト</h2>
+          <span>画像と一緒に使用してください。</span>
+        </div>
+        <div class="prompt-actions">
+          <button id="copyPromptButton" class="button button-primary" type="button">コピー</button>
+        </div>
+      </div>
+      <textarea id="promptOutput" rows="9" spellcheck="false" aria-label="ChatGPT用補助プロンプト" readonly></textarea>
+      <p class="prompt-note">設定内容に応じて自動生成されます。PNG画像と一緒にChatGPTへ添付してください。</p>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="helpModal" class="help-modal" hidden>
+    <section class="help-dialog" role="dialog" aria-modal="true" aria-labelledby="help-title">
+      <button id="closeHelpButton" class="help-close" type="button" aria-label="使い方を閉じる">×</button>
+      <h2 id="help-title">使い方</h2>
+      <div class="help-content">
+        <p class="help-lead">「R-Wrist」などのポイントをドラッグで移動してポーズを作ります。<br>ポイントをダブルクリックで関節ラベルの表示を切り替えます。</p>
+        <p>右側の下の方にある「画像を保存」で画像を保存します。</p>
+        <p>ChatGPTでの画像生成時にこの画像を添付し「補助プロンプト」に自動生成されるプロンプトを添えると、より正確なポーズが再現できるかもしれません。</p>
+        <p class="help-note">※細かい部分や厳密な指定は、これとは別に自分でプロンプトを記述する必要があります！</p>
+        <p class="help-external-note">ChatGPT以外で使用する場合「ラベルなし、ポーズ黒化」の方が適しているかもしれません<br>(ポーズが反映されない、ラベル文字がそのまま入る、腕部分が青くなる、等が起こる可能性あり)<br>また、Openposeなどのちゃんとした機能が使える場合、そちらの方が強力です。</p>
+        <h3>左側のUI</h3>
+        <h4>関節座標</h4>
+        <p>左側に「頭(Head)　x512　y316」などずらっと並んでいる物は、各ポイントの位置をリアルタイムで表示しています。</p>
+        <p>ここに数値を入力する事でもポイントを移動できます。</p>
+        <h3>中央の編集エリア上部のUI</h3>
+        <h4>ポーズをセーブ/ロード</h4>
+        <p>現在の状態を3件まで保存できます。セーブデータはページを閉じても残ります。</p>
+        <h4>エクスポート/インポート</h4>
+        <p>　エクスポート<br>現在の状態を文字列にしてクリップボードにコピーします。<br>　インポート<br>エクスポートした文字列を貼り付けて「インポート」を押すと状態を復元します。</p>
+        <h4>左右連動</h4>
+        <p>オンにすると左右のポイントが連動して動きます。</p>
+        <h4>左右対称</h4>
+        <p>オンにすると左右のポイントが連動して左右対称で動きます。</p>
+        <h4>全体移動</h4>
+        <p>全ポイントを固定して全体を動かします。</p>
+        <h4>左右反転</h4>
+        <p>ポーズを左右反転します。</p>
+        <h4>ポーズ回転</h4>
+        <p>オンの間、ポーズをドラッグまたは角度入力で回転させられます。</p>
+        <h4>左右入替</h4>
+        <p>ポイントの位置を動かさず、色とR/Lを交換します。<br>「左右入替」は全て入れ替え=キャラクターを背後から見るポーズになります。<br>「腕/脚だけ」は、振り返りなど体をひねるポーズを作れます。<br>「脚だけ左右入替」すると「上半身はこちら向きだが下半身は画面奥向き」=振り返りになります。<br>(そのままでは腰から180°回転する事になるので調整してください。)</p>
+        <h4>操作を戻す/進める</h4>
+        <p>ポイントの移動などの操作を1つ前に戻す/先に進めます。<br>キーボードのCtrl+Z/Yでも実行できます。</p>
+        <h4>拡大率</h4>
+        <p>ポーズの拡大率をスライダーで変更できます。</p>
+        <h3>右側のUI</h3>
+        <h4>見本画像</h4>
+        <p>背景にポーズの参考にする画像を置けます。<br>見本画像を動かす時は、画像を置くと追加で出る「画像を移動」オプションをオンにしてください。<br>また見本画像の透明度、拡大率をスライダーで設定できます。</p>
+        <h4>関節ラベルの個別設定</h4>
+        <p>「R-Wrist」などのポイントの文字ラベルを表示/削除します。<br>関節ポイントをダブルクリックでも切り替えられます。<br>(「全体移動」「見本画像を移動」「ポーズ回転」モードがONの間は無効です)<br>すべて表示/非表示で一括で操作します。</p>
+        <h4>補足説明</h4>
+        <p>関節ラベルは、画像認識を妨げる可能性もあります。<br>特に問題となるのは、以下のような場合です。</p>
+        <ul class="help-list">
+          <li>ラベルが他のポイントの円と近い</li>
+          <li>多数のラベルが密集している</li>
+        </ul>
+        <p>どちらの場合も「ラベルがどのポイントのものか」が判別しにくくなり、画像生成に悪影響を与えます。<br>このような場合には、該当するラベルをOFFにしてください。<br>ラベルはあくまで補助的な効果なので、少しでも怪しいと思ったらOFFでOKです。</p>
+        <h4>手足の追加/削除</h4>
+        <p>腕や脚を片側4本まで追加できます。前腕・上腕・脛・腿のボタンで部分的に非表示にでき、×ボタンで1本全体を削除できます。<br>隻腕・多腕などのポーズを作成できます。</p>
+        <h4>前後関係</h4>
+        <p>「右腕が体の後ろ側にある」「右足は左足より前にある」などを設定します。</p>
+        <h4>画像設定と保存</h4>
+        <p>　画像サイズ<br>変更すると、編集領域の縦横比も連動して変わります。<br>「任意」で好きなサイズにもできます。</p>
+        <p>　背景色<br>通常は白を推奨しますが、黒背景または透明背景でも出力できます。ポーズ黒化中は黒背景を選択できません。</p>
+        <p>　関節ラベルも含める<br>チェックを外すと、画像に「R-Wrist」などのポイントの文字ラベルを入れません。</p>
+        <p>　ポーズ黒化<br>ポーズの色分けをやめ、黒一色にします(画像保存時に関節ポイントも塗りつぶされます)。</p>
+      </div>
+    </section>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
