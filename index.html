@@ -25,7 +25,11 @@
         <h2 id="coordinates-title">関節座標</h2>
         <button id="hideCoordinatesButton" class="panel-close-button" type="button" aria-label="関節座標を閉じる" title="関節座標を閉じる">×</button>
       </div>
-      <p class="coordinate-help">原点(0, 0)は編集エリア左上です。</p>
+      <div class="coordinate-origin-controls" aria-label="関節座標の原点と表示設定">
+        <button id="changeCoordinateOriginButton" class="button button-ghost" type="button">原点変更</button>
+        <output id="coordinateOriginValue" aria-live="polite">腰(Waist)</output>
+        <button id="showJointCoordinatesButton" class="button button-ghost" type="button" aria-pressed="false">関節に表示</button>
+      </div>
       <div class="coordinate-list" id="coordinateControls"></div>
     </aside>
 
@@ -92,9 +96,14 @@
               <button id="swapArmsButton" class="button button-ghost transform-button" type="button" title="位置を動かさず、腕の色・R/Lだけを交換します">腕だけ</button>
               <button id="swapLegsButton" class="button button-ghost transform-button" type="button" title="位置を動かさず、脚の色・R/Lだけを交換します">脚だけ</button>
             </div>
-            <label class="range-control skeleton-scale-control"><span>拡大率</span><output id="skeletonScaleValue">100%</output>
-              <input id="skeletonScale" type="range" min="25" max="300" step="1" value="100">
-            </label>
+            <div class="canvas-scale-controls">
+              <label class="range-control canvas-font-size-control"><span>フォントサイズ</span><output id="canvasFontSizeValue">100%</output>
+                <input id="canvasFontSize" type="range" min="50" max="200" step="5" value="100">
+              </label>
+              <label class="range-control skeleton-scale-control"><span>拡大率</span><output id="skeletonScaleValue">100%</output>
+                <input id="skeletonScale" type="range" min="25" max="300" step="1" value="100">
+              </label>
+            </div>
           </div>
           <div class="history-actions">
             <div class="reset-actions">
@@ -131,7 +140,7 @@
           </label>
           <div id="referenceImageOptions" class="reference-options" hidden>
             <label class="toggle-row">
-              <span><b>画像を表示</b><small>表示していても書き出しには含まれません</small></span>
+              <span><b>画像を表示</b><small>表示していても保存画像には含まれません</small></span>
               <input id="showReferenceImage" type="checkbox" checked>
               <i aria-hidden="true"></i>
             </label>
@@ -146,9 +155,10 @@
             <label class="range-control">拡大率 <output id="referenceScaleValue">100%</output>
               <input id="referenceScale" type="range" min="25" max="300" value="100">
             </label>
-            <div class="form-grid compact-fields">
-              <label>位置 X<input id="referenceX" type="number" step="1"></label>
-              <label>位置 Y<input id="referenceY" type="number" step="1"></label>
+            <div class="reference-position-row">
+              <span>位置</span>
+              <label>X<input id="referenceX" type="number" step="1" aria-label="見本画像のX位置"></label>
+              <label>Y<input id="referenceY" type="number" step="1" aria-label="見本画像のY位置"></label>
             </div>
             <button id="removeReferenceImage" class="button button-ghost button-full danger-button" type="button">見本画像を削除</button>
           </div>
@@ -156,9 +166,9 @@
       </details>
 
       <details class="settings-card">
-        <summary><span>関節ラベルの個別設定</span><span class="summary-icon">＋</span></summary>
+        <summary><span>関節ラベルの表示/非表示</span><span class="summary-icon">＋</span></summary>
         <div class="card-content">
-          <p class="field-hint">関節ポイントをダブルクリックでも切り替え</p>
+          <p class="field-hint">関節ポイントをダブルクリックでも切り替えられます</p>
           <div class="mini-actions">
             <button id="showAllLabels" class="button button-ghost" type="button">すべて表示</button>
             <button id="hideAllLabels" class="button button-ghost" type="button">すべて非表示</button>
@@ -176,15 +186,21 @@
             <button class="button button-ghost" type="button" data-add-limb="rightLeg">右脚追加</button>
             <button class="button button-ghost" type="button" data-add-limb="leftLeg">左脚追加</button>
           </div>
+          <p class="limb-editor-hint">以下のボタンで表示/非表示と削除ができます</p>
           <div id="limbControls" class="limb-control-grid"></div>
-          <p class="field-hint">片側につき、元の1本を含めて最大4本まで追加できます。</p>
         </div>
       </details>
 
       <details class="settings-card">
-        <summary><span>前後関係</span><span class="summary-icon">＋</span></summary>
+        <summary><span>重なり順</span><span class="summary-icon">＋</span></summary>
+        <p class="settings-card-intro">ドラッグで順番を変えられます</p>
+        <div class="card-content layer-order-list" id="layerOrderControls"></div>
+      </details>
+
+      <details class="settings-card">
+        <summary><span>手足の前後関係</span><span class="summary-icon">＋</span></summary>
+        <p class="settings-card-intro">画像上で手前/奥どちらなのか設定します</p>
         <div class="card-content depth-grid" id="depthControls"></div>
-        <p class="field-hint">「奥」は破線かつ薄い色で描画されます。</p>
       </details>
 
       <details class="settings-card export-card" open>
@@ -227,14 +243,13 @@
       <div class="prompt-heading">
         <div class="prompt-title-row">
           <h2 id="prompt-title">補助プロンプト</h2>
-          <span>画像と一緒に使用してください。</span>
+          <span>状態に応じて自動生成されます。保存した画像と一緒に使用してください。</span>
         </div>
         <div class="prompt-actions">
           <button id="copyPromptButton" class="button button-primary" type="button">コピー</button>
         </div>
       </div>
       <textarea id="promptOutput" rows="9" spellcheck="false" aria-label="ChatGPT用補助プロンプト" readonly></textarea>
-      <p class="prompt-note">設定内容に応じて自動生成されます。PNG画像と一緒にChatGPTへ添付してください。</p>
     </section>
   </main>
 
@@ -253,6 +268,8 @@
         <h4>関節座標</h4>
         <p>左側に「頭(Head)　x512　y316」などずらっと並んでいる物は、各ポイントの位置をリアルタイムで表示しています。</p>
         <p>ここに数値を入力する事でもポイントを移動できます。</p>
+        <h4>原点変更</h4>
+        <p>原点(0,0)をどこにするか設定します。<br>「関節に表示」を有効にすると、各ポイントの近くに座標を表示します。</p>
         <h3>中央の編集エリア上部のUI</h3>
         <h4>ポーズをセーブ/ロード</h4>
         <p>現在の状態を3件まで保存できます。セーブデータはページを閉じても残ります。</p>
@@ -277,8 +294,9 @@
         <h3>右側のUI</h3>
         <h4>見本画像</h4>
         <p>背景にポーズの参考にする画像を置けます。<br>見本画像を動かす時は、画像を置くと追加で出る「画像を移動」オプションをオンにしてください。<br>また見本画像の透明度、拡大率をスライダーで設定できます。</p>
-        <h4>関節ラベルの個別設定</h4>
-        <p>「R-Wrist」などのポイントの文字ラベルを表示/削除します。<br>関節ポイントをダブルクリックでも切り替えられます。<br>(「全体移動」「見本画像を移動」「ポーズ回転」モードがONの間は無効です)<br>すべて表示/非表示で一括で操作します。</p>
+        <h4>関節ラベルの表示/非表示</h4>
+        <p class="help-note">※表示されているラベルは実際に保存画像に残ります</p>
+        <p>「R-Wrist」などのポイントの文字ラベルの表示を切り替えます。<br>関節ポイントをダブルクリックでも切り替えられます。<br>(「全体移動」「見本画像を移動」「ポーズ回転」モードがONの間は無効です)<br>すべて表示/非表示で一括で操作します。</p>
         <h4>補足説明</h4>
         <p>関節ラベルは、画像認識を妨げる可能性もあります。<br>特に問題となるのは、以下のような場合です。</p>
         <ul class="help-list">
@@ -288,8 +306,10 @@
         <p>どちらの場合も「ラベルがどのポイントのものか」が判別しにくくなり、画像生成に悪影響を与えます。<br>このような場合には、該当するラベルをOFFにしてください。<br>ラベルはあくまで補助的な効果なので、少しでも怪しいと思ったらOFFでOKです。</p>
         <h4>手足の追加/削除</h4>
         <p>腕や脚を片側4本まで追加できます。前腕・上腕・脛・腿のボタンで部分的に非表示にでき、×ボタンで1本全体を削除できます。<br>隻腕・多腕などのポーズを作成できます。</p>
-        <h4>前後関係</h4>
-        <p>「右腕が体の後ろ側にある」「右足は左足より前にある」などを設定します。</p>
+        <h4>重なり順</h4>
+        <p>画像上でどちらが手前/奥なのか設定できます。<br>「手を体の後ろに回している」などはこれだけで伝えるのは難しいので、下の「手足の前後関係」設定をお使いください。</p>
+        <h4>手足の前後関係</h4>
+        <p>腕・脚の線の描き方を変えることで、「腕を体の後ろに回している」「右足は左足より前にある」などを表現します。</p>
         <h4>画像設定と保存</h4>
         <p>　画像サイズ<br>変更すると、編集領域の縦横比も連動して変わります。<br>「任意」で好きなサイズにもできます。</p>
         <p>　背景色<br>通常は白を推奨しますが、黒背景または透明背景でも出力できます。ポーズ黒化中は黒背景を選択できません。</p>

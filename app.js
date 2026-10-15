@@ -13,6 +13,20 @@ const POSE_DATA_VERSION = 1;
 const POSE_STORAGE_KEY = "chatgpt-pose-reference-tool.saved-poses.v1";
 const POSE_EXPORT_APP = "ChatGPTPoseReferenceTool";
 const MAX_POSE_IMPORT_LENGTH = 500000;
+const FIXED_LAYER_KEYS = ["head", "chest", "waist"];
+const INITIAL_LAYER_ORDER = [
+  "limb:rightArmSlot-1",
+  "limb:leftArmSlot-1",
+  "limb:rightLegSlot-1",
+  "limb:leftLegSlot-1",
+  ...FIXED_LAYER_KEYS
+];
+const coordinateOriginModes = ["waist", "center", "bottomLeft"];
+const coordinateOriginLabels = {
+  waist: "腰(Waist)",
+  center: "中央",
+  bottomLeft: "左下"
+};
 
 const partDefinitions = {
   head: { label: "頭部", color: "#ffd84a" },
@@ -52,6 +66,20 @@ const torsoBones = [
   { a: "rHip", b: "lHip", part: "torso" }
 ];
 
+const torsoLayerBones = {
+  chest: [
+    { a: "neck", b: "chest" },
+    { a: "neck", b: "rShoulder" },
+    { a: "neck", b: "lShoulder" }
+  ],
+  waist: [
+    { a: "chest", b: "waist" },
+    { a: "waist", b: "rHip" },
+    { a: "waist", b: "lHip" },
+    { a: "rHip", b: "lHip" }
+  ]
+};
+
 const limbSlotDefinitions = {
   rightArmSlot: { type: "arm", anchorKey: "rShoulder", baseMiddleKey: "rElbow", baseEndKey: "rWrist", initialPart: "rightArm" },
   leftArmSlot: { type: "arm", anchorKey: "lShoulder", baseMiddleKey: "lElbow", baseEndKey: "lWrist", initialPart: "leftArm" },
@@ -78,6 +106,7 @@ const state = {
   colors: Object.fromEntries(Object.entries(partDefinitions).map(([key, value]) => [key, value.color])),
   limbs: createInitialLimbs(),
   labelVisibility: Object.fromEntries(Object.values(initialJoints).map(joint => [joint.label, true])),
+  layerOrder: [...INITIAL_LAYER_ORDER],
   linkedMove: false,
   symmetricMove: false,
   moveWhole: false,
@@ -86,8 +115,11 @@ const state = {
   rotationDrag: null,
   poseBlack: false,
   skeletonScale: 1,
+  fontSize: 1,
   outputSize: { width: 1024, height: 1536 },
   symmetryAxisX: DESIGN_WIDTH / 2,
+  coordinateOrigin: "waist",
+  showJointCoordinates: false,
   selectedJoint: null,
   dragAction: null,
   lastDragPoint: null,
@@ -145,8 +177,127 @@ function getPresentLimbs(slot = null) {
   return state.limbs.filter(limb => limb.present && (!slot || limb.slot === slot));
 }
 
-function semanticLimbExists(part) {
-  return state.limbs.some(limb => limb.present && getSlotPart(limb.slot) === part);
+function getLayerKeyForLimb(limb) {
+  return `limb:${limb.id}`;
+}
+
+function getLimbFromLayerKey(key) {
+  if (!key.startsWith("limb:")) return null;
+  const id = key.slice(5);
+  return state.limbs.find(limb => limb.id === id && limb.present) || null;
+}
+
+function getLayerCategory(key) {
+  const limb = getLimbFromLayerKey(key);
+  if (limb) return ["rightArm", "leftArm", "rightLeg", "leftLeg"].indexOf(getSlotPart(limb.slot));
+  return ({ head: 4, chest: 5, waist: 6 })[key] ?? 99;
+}
+
+function insertLimbLayerKey(limb) {
+  const key = getLayerKeyForLimb(limb);
+  if (state.layerOrder.includes(key)) return;
+  const samePartIndexes = state.layerOrder
+    .map((layerKey, index) => ({ layerKey, index, layerLimb: getLimbFromLayerKey(layerKey) }))
+    .filter(item => item.layerLimb && getSlotPart(item.layerLimb.slot) === getSlotPart(limb.slot))
+    .map(item => item.index);
+  if (samePartIndexes.length) {
+    state.layerOrder.splice(Math.max(...samePartIndexes) + 1, 0, key);
+    return;
+  }
+  const category = getLayerCategory(key);
+  const insertAt = state.layerOrder.findIndex(layerKey => getLayerCategory(layerKey) > category);
+  state.layerOrder.splice(insertAt < 0 ? state.layerOrder.length : insertAt, 0, key);
+}
+
+function ensureLayerOrder() {
+  const validKeys = new Set([
+    ...getPresentLimbs().map(getLayerKeyForLimb),
+    ...FIXED_LAYER_KEYS
+  ]);
+  const seen = new Set();
+  state.layerOrder = (state.layerOrder || [])
+    .filter(key => validKeys.has(key) && !seen.has(key) && seen.add(key));
+  FIXED_LAYER_KEYS.forEach(key => {
+    if (!state.layerOrder.includes(key)) state.layerOrder.push(key);
+  });
+  getPresentLimbs()
+    .sort((a, b) => getLayerCategory(getLayerKeyForLimb(a)) - getLayerCategory(getLayerKeyForLimb(b)) || a.index - b.index)
+    .forEach(insertLimbLayerKey);
+}
+
+function captureSemanticLayerOrder() {
+  const ranks = new Map();
+  ["rightArm", "leftArm", "rightLeg", "leftLeg"].forEach(part => {
+    getPresentLimbs()
+      .filter(limb => getSlotPart(limb.slot) === part)
+      .sort((a, b) => a.index - b.index)
+      .forEach((limb, index) => ranks.set(limb.id, `${part}:${index + 1}`));
+  });
+  return state.layerOrder.map(key => {
+    const limb = getLimbFromLayerKey(key);
+    return limb ? `semantic:${ranks.get(limb.id)}` : key;
+  });
+}
+
+function restoreSemanticLayerOrder(tokens) {
+  const tokenToKey = new Map();
+  ["rightArm", "leftArm", "rightLeg", "leftLeg"].forEach(part => {
+    getPresentLimbs()
+      .filter(limb => getSlotPart(limb.slot) === part)
+      .sort((a, b) => a.index - b.index)
+      .forEach((limb, index) => tokenToKey.set(`semantic:${part}:${index + 1}`, getLayerKeyForLimb(limb)));
+  });
+  state.layerOrder = tokens.map(token => tokenToKey.get(token) || token);
+  ensureLayerOrder();
+}
+
+function limbIntersectsExportFrame(limb, bounds = getVisibleFrameBounds()) {
+  if (!limb?.present) return false;
+  const definition = limbSlotDefinitions[limb.slot];
+  const anchorKey = definition.anchorKey;
+  const anchorOwner = getPresentLimbs(limb.slot).sort((a, b) => a.index - b.index)[0];
+  if (anchorOwner?.id === limb.id && circleIntersectsBounds(state.joints[anchorKey], 11.5, bounds)) return true;
+  if (!limb.proximalVisible) return false;
+  if (segmentIntersectsExportBounds(state.joints[anchorKey], state.joints[limb.middleKey], bounds, 8)) return true;
+  if (circleIntersectsBounds(state.joints[limb.middleKey], 11.5, bounds)) return true;
+  if (!limb.distalVisible) return false;
+  if (segmentIntersectsExportBounds(state.joints[limb.middleKey], state.joints[limb.endKey], bounds, 8)) return true;
+  return circleIntersectsBounds(state.joints[limb.endKey], 11.5, bounds);
+}
+
+function segmentIntersectsExportBounds(a, b, bounds, padding = 0) {
+  return segmentIntersectsRectangle(a, b, {
+    x: bounds.left,
+    y: bounds.top,
+    width: bounds.right - bounds.left,
+    height: bounds.bottom - bounds.top
+  }, padding);
+}
+
+function getExportedLabelLayout() {
+  if (!document.getElementById("exportLabels").checked) return {};
+  ctx.save();
+  ctx.font = `700 ${13 * state.fontSize}px "Yu Gothic UI", Meiryo, sans-serif`;
+  const layout = computeLabelLayout(ctx);
+  ctx.restore();
+  const bounds = getVisibleFrameBounds();
+  return Object.fromEntries(Object.entries(layout).filter(([, box]) => !rectangleIsOutsideBounds(box, bounds)));
+}
+
+function getExportedRlLabelExample(labelLayout) {
+  const priority = [
+    "R-Wrist", "L-Wrist", "R-Elbow", "L-Elbow", "R-Shoulder", "L-Shoulder",
+    "R-Ankle", "L-Ankle", "R-Knee", "L-Knee", "R-Hip", "L-Hip"
+  ];
+  return Object.keys(labelLayout)
+    .filter(key => /^[RL]-/.test(state.joints[key]?.label || ""))
+    .sort((a, b) => {
+      const aPriority = priority.indexOf(state.joints[a].label);
+      const bPriority = priority.indexOf(state.joints[b].label);
+      const normalizedA = aPriority === -1 ? priority.length : aPriority;
+      const normalizedB = bPriority === -1 ? priority.length : bPriority;
+      return normalizedA - normalizedB;
+    })[0] || null;
 }
 
 function oppositeLimbPart(part) {
@@ -178,8 +329,10 @@ function capturePoseSnapshot() {
     joints: cloneJoints(state.joints),
     limbs: cloneLimbs(state.limbs),
     labelVisibility: { ...state.labelVisibility },
+    layerOrder: [...state.layerOrder],
     symmetryAxisX: state.symmetryAxisX,
-    skeletonScale: state.skeletonScale
+    skeletonScale: state.skeletonScale,
+    fontSize: state.fontSize
   };
 }
 
@@ -206,12 +359,16 @@ function restorePoseSnapshot(snapshot) {
   state.joints = cloneJoints(snapshot.joints);
   state.limbs = cloneLimbs(snapshot.limbs);
   state.labelVisibility = { ...snapshot.labelVisibility };
+  state.layerOrder = [...(snapshot.layerOrder || INITIAL_LAYER_ORDER)];
   state.symmetryAxisX = snapshot.symmetryAxisX;
   state.skeletonScale = snapshot.skeletonScale;
+  state.fontSize = snapshot.fontSize ?? 1;
   state.labelPlacements = {};
   state.selectedJoint = null;
   document.getElementById("skeletonScale").value = String(Math.round(state.skeletonScale * 100));
   document.getElementById("skeletonScaleValue").value = `${Math.round(state.skeletonScale * 100)}%`;
+  document.getElementById("canvasFontSize").value = String(Math.round(state.fontSize * 100));
+  document.getElementById("canvasFontSizeValue").value = `${Math.round(state.fontSize * 100)}%`;
   rebuildAllDynamicControls();
   updateCoordinateControls();
   updateModeUi();
@@ -241,8 +398,10 @@ function captureStoredPoseData() {
       })),
       slotParts: Object.fromEntries(allLimbSlots.map(slot => [slot, getSlotPart(slot)])),
       labelVisibility: { ...state.labelVisibility },
+      layerOrder: [...state.layerOrder],
       symmetryAxisX: state.symmetryAxisX,
-      skeletonScale: state.skeletonScale
+      skeletonScale: state.skeletonScale,
+      fontSize: state.fontSize
     },
     output: {
       width: state.outputSize.width,
@@ -319,8 +478,10 @@ function normalizeStoredPoseData(value) {
 
   const symmetryAxisX = Number(rawPose.symmetryAxisX);
   const skeletonScale = Number(rawPose.skeletonScale);
+  const fontSize = rawPose.fontSize == null ? 1 : Number(rawPose.fontSize);
   if (!Number.isFinite(symmetryAxisX) || Math.abs(symmetryAxisX) > 2000000) return null;
   if (!Number.isFinite(skeletonScale) || skeletonScale < 0.25 || skeletonScale > 3) return null;
+  if (!Number.isFinite(fontSize) || fontSize < 0.5 || fontSize > 2) return null;
 
   const expectedLabels = new Set(["Head", "Neck", "Chest", "Waist"]);
   allLimbSlots.forEach(slot => {
@@ -342,6 +503,29 @@ function normalizeStoredPoseData(value) {
     labelVisibility[label] = rawVisibility[label] !== false;
   }
 
+  const validLayerKeys = new Set([
+    ...limbs.filter(limb => limb.present).map(limb => `limb:${limb.id}`),
+    ...FIXED_LAYER_KEYS
+  ]);
+  let layerOrder;
+  if (rawPose.layerOrder == null) {
+    const partOrder = ["rightArm", "leftArm", "rightLeg", "leftLeg"];
+    layerOrder = limbs
+      .filter(limb => limb.present)
+      .sort((a, b) => {
+        const partDifference = partOrder.indexOf(slotParts[a.slot]) - partOrder.indexOf(slotParts[b.slot]);
+        return partDifference || a.index - b.index;
+      })
+      .map(limb => `limb:${limb.id}`)
+      .concat(FIXED_LAYER_KEYS);
+  } else {
+    if (!Array.isArray(rawPose.layerOrder)
+      || rawPose.layerOrder.length !== validLayerKeys.size
+      || rawPose.layerOrder.some(key => typeof key !== "string" || !validLayerKeys.has(key))
+      || new Set(rawPose.layerOrder).size !== rawPose.layerOrder.length) return null;
+    layerOrder = [...rawPose.layerOrder];
+  }
+
   const width = Number(rawOutput.width);
   const height = Number(rawOutput.height);
   if (![width, height].every(number => Number.isInteger(number) && number >= MIN_OUTPUT_SIZE && number <= MAX_OUTPUT_SIZE)) return null;
@@ -349,7 +533,7 @@ function normalizeStoredPoseData(value) {
   if (typeof rawOutput.exportLabels !== "boolean" || typeof rawOutput.poseBlack !== "boolean") return null;
 
   return {
-    pose: { joints, limbs, slotParts, labelVisibility, symmetryAxisX, skeletonScale },
+    pose: { joints, limbs, slotParts, labelVisibility, layerOrder, symmetryAxisX, skeletonScale, fontSize },
     output: {
       width,
       height,
@@ -391,8 +575,10 @@ function restoreStoredPoseData(value) {
     state.joints[key].y = point.y;
   });
   state.labelVisibility = { ...data.pose.labelVisibility };
+  state.layerOrder = [...data.pose.layerOrder];
   state.symmetryAxisX = data.pose.symmetryAxisX;
   state.skeletonScale = data.pose.skeletonScale;
+  state.fontSize = data.pose.fontSize;
   state.outputSize = { width: data.output.width, height: data.output.height };
   state.poseBlack = data.output.poseBlack;
   state.labelPlacements = {};
@@ -408,6 +594,8 @@ function restoreStoredPoseData(value) {
   document.getElementById("editReferenceImage").checked = false;
   document.getElementById("skeletonScale").value = String(Math.round(state.skeletonScale * 100));
   document.getElementById("skeletonScaleValue").value = `${Math.round(state.skeletonScale * 100)}%`;
+  document.getElementById("canvasFontSize").value = String(Math.round(state.fontSize * 100));
+  document.getElementById("canvasFontSizeValue").value = `${Math.round(state.fontSize * 100)}%`;
   document.getElementById("exportBackground").value = data.output.background;
   document.getElementById("exportLabels").checked = data.output.exportLabels;
   document.getElementById("poseBlack").checked = data.output.poseBlack;
@@ -423,6 +611,7 @@ function restoreStoredPoseData(value) {
   rebuildAllDynamicControls();
   updateStageAspect();
   updateCoordinateControls();
+  updateCoordinateOriginUi();
   updateReferenceControls();
   updatePoseBlackUi();
   updateModeUi();
@@ -610,6 +799,7 @@ function initializeControls() {
 
   updateStageAspect();
   updateCoordinateControls();
+  updateCoordinateOriginUi();
   updateReferenceControls();
   updateModeUi();
   updateHistoryButtons();
@@ -619,9 +809,11 @@ function initializeControls() {
 
 function rebuildAllDynamicControls() {
   ensureLabelVisibility();
+  ensureLayerOrder();
   rebuildJointControls();
   rebuildDepthControls();
   rebuildLimbControls();
+  rebuildLayerOrderControls();
   updateAddLimbButtons();
 }
 
@@ -693,12 +885,13 @@ function rebuildDepthControls() {
           container.appendChild(placeholder);
           return;
         }
-        const label = document.createElement("label");
-        label.className = "depth-control depth-control-colored";
-        label.style.setProperty("--depth-part-color", state.colors[getSlotPart(limb.slot)]);
+        const control = document.createElement("div");
+        control.className = "depth-control depth-control-colored";
+        control.style.setProperty("--depth-part-color", state.colors[getSlotPart(limb.slot)]);
         const name = getLimbDisplayName(limb);
-        label.innerHTML = `<b>${name}</b><select data-depth-limb="${limb.id}" aria-label="${name}の前後関係"><option value="front"${limb.depth === "front" ? " selected" : ""}>手前</option><option value="back"${limb.depth === "back" ? " selected" : ""}>奥</option></select>`;
-        container.appendChild(label);
+        const isBack = limb.depth === "back";
+        control.innerHTML = `<b>${name}</b><button class="depth-toggle-button" type="button" data-depth-limb="${limb.id}" aria-label="${name}の前後関係。現在は${isBack ? "奥" : "手前"}" aria-pressed="${isBack}">${isBack ? "奥" : "手前"}</button>`;
+        container.appendChild(control);
       });
     }
   });
@@ -723,10 +916,31 @@ function rebuildLimbControls() {
         control.style.setProperty("--limb-part-color", state.colors[getSlotPart(limb.slot)]);
         const proximalName = limb.type === "arm" ? "上腕" : "腿";
         const distalName = limb.type === "arm" ? "前腕" : "脛";
-        control.innerHTML = `<div class="limb-control-header"><span>${getLimbDisplayName(limb)}:</span><button class="limb-remove" type="button" data-remove-limb="${limb.id}" aria-label="${getLimbDisplayName(limb)}を削除">×</button></div><div class="limb-segments"><label class="segment-toggle"><input type="checkbox" data-limb-segment="distal" data-limb-id="${limb.id}"${limb.distalVisible ? " checked" : ""}><span>${distalName}</span></label><label class="segment-toggle"><input type="checkbox" data-limb-segment="proximal" data-limb-id="${limb.id}"${limb.proximalVisible ? " checked" : ""}><span>${proximalName}</span></label></div>`;
+        control.innerHTML = `<div class="limb-control-header"><span>${getLimbDisplayName(limb)}:</span><button class="limb-remove" type="button" data-remove-limb="${limb.id}" aria-label="${getLimbDisplayName(limb)}を削除">×</button></div><div class="limb-segments"><label class="segment-toggle"><input type="checkbox" data-limb-segment="distal" data-limb-id="${limb.id}"${limb.distalVisible ? " checked" : ""}${!limb.proximalVisible ? " disabled" : ""}><span>${distalName}</span></label><label class="segment-toggle"><input type="checkbox" data-limb-segment="proximal" data-limb-id="${limb.id}"${limb.proximalVisible ? " checked" : ""}><span>${proximalName}</span></label></div>`;
         container.appendChild(control);
       });
     }
+  });
+}
+
+function rebuildLayerOrderControls() {
+  const container = document.getElementById("layerOrderControls");
+  if (!container) return;
+  ensureLayerOrder();
+  container.replaceChildren();
+  const fixedNames = { head: "頭", chest: "胸", waist: "腰" };
+  state.layerOrder.forEach(key => {
+    const limb = getLimbFromLayerKey(key);
+    const item = document.createElement("div");
+    item.className = "layer-order-item";
+    item.draggable = true;
+    item.dataset.layerKey = key;
+    const part = limb ? getSlotPart(limb.slot) : (key === "head" ? "head" : "torso");
+    item.style.setProperty("--layer-item-color", state.colors[part]);
+    const name = limb ? getLimbDisplayName(limb) : fixedNames[key];
+    item.innerHTML = `<span class="layer-drag-handle" aria-hidden="true">⋮⋮</span><span>${name}</span>`;
+    item.setAttribute("aria-label", `${name}。ドラッグで重なり順を変更`);
+    container.appendChild(item);
   });
 }
 
@@ -766,14 +980,57 @@ function bindEvents() {
   helpModal.addEventListener("click", event => { if (event.target === helpModal) closeHelp(); });
   document.addEventListener("keydown", event => { if (event.key === "Escape" && !helpModal.hidden) closeHelp(); });
 
-  document.getElementById("depthControls").addEventListener("change", event => {
-    const limb = state.limbs.find(item => item.id === event.target.dataset.depthLimb);
+  document.getElementById("depthControls").addEventListener("click", event => {
+    const button = event.target.closest("[data-depth-limb]");
+    if (!button) return;
+    const limb = state.limbs.find(item => item.id === button.dataset.depthLimb);
     if (!limb) return;
     beginHistoryTransaction();
-    limb.depth = event.target.value;
+    limb.depth = limb.depth === "front" ? "back" : "front";
+    rebuildDepthControls();
     render();
     updatePrompt();
     commitHistoryTransaction();
+  });
+  const layerOrderControls = document.getElementById("layerOrderControls");
+  let draggedLayerKey = null;
+  const syncLayerOrderFromDom = () => {
+    state.layerOrder = Array.from(layerOrderControls.querySelectorAll("[data-layer-key]"), item => item.dataset.layerKey);
+    render();
+  };
+  layerOrderControls.addEventListener("dragstart", event => {
+    const item = event.target.closest("[data-layer-key]");
+    if (!item) return;
+    draggedLayerKey = item.dataset.layerKey;
+    beginHistoryTransaction();
+    item.classList.add("is-dragging");
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", draggedLayerKey);
+  });
+  layerOrderControls.addEventListener("dragover", event => {
+    if (!draggedLayerKey) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const dragged = layerOrderControls.querySelector(`[data-layer-key="${draggedLayerKey}"]`);
+    const target = event.target.closest("[data-layer-key]");
+    if (!dragged || !target || target === dragged) return;
+    const rect = target.getBoundingClientRect();
+    const placeAfter = event.clientY > rect.top + rect.height / 2;
+    layerOrderControls.insertBefore(dragged, placeAfter ? target.nextSibling : target);
+    syncLayerOrderFromDom();
+  });
+  layerOrderControls.addEventListener("drop", event => {
+    if (!draggedLayerKey) return;
+    event.preventDefault();
+    syncLayerOrderFromDom();
+  });
+  layerOrderControls.addEventListener("dragend", () => {
+    layerOrderControls.querySelectorAll(".is-dragging").forEach(item => item.classList.remove("is-dragging"));
+    if (draggedLayerKey) {
+      syncLayerOrderFromDom();
+      commitHistoryTransaction();
+    }
+    draggedLayerKey = null;
   });
   document.getElementById("labelControls").addEventListener("change", event => {
     const key = event.target.dataset.labelJoint;
@@ -784,6 +1041,13 @@ function bindEvents() {
   });
   document.getElementById("showAllLabels").addEventListener("click", () => setAllLabels(true));
   document.getElementById("hideAllLabels").addEventListener("click", () => setAllLabels(false));
+
+  document.getElementById("changeCoordinateOriginButton").addEventListener("click", cycleCoordinateOrigin);
+  document.getElementById("showJointCoordinatesButton").addEventListener("click", () => {
+    state.showJointCoordinates = !state.showJointCoordinates;
+    updateCoordinateOriginUi();
+    render();
+  });
 
   document.getElementById("linkedMove").addEventListener("change", event => {
     state.linkedMove = event.target.checked;
@@ -842,6 +1106,11 @@ function bindEvents() {
   skeletonScale.addEventListener("keydown", beginHistoryTransaction);
   skeletonScale.addEventListener("input", event => applySkeletonScale(Number(event.target.value) / 100));
   skeletonScale.addEventListener("change", commitHistoryTransaction);
+  const canvasFontSize = document.getElementById("canvasFontSize");
+  canvasFontSize.addEventListener("pointerdown", beginHistoryTransaction);
+  canvasFontSize.addEventListener("keydown", beginHistoryTransaction);
+  canvasFontSize.addEventListener("input", event => applyCanvasFontSize(Number(event.target.value) / 100));
+  canvasFontSize.addEventListener("change", commitHistoryTransaction);
   document.getElementById("coordinateControls").addEventListener("change", handleCoordinateChange);
   document.getElementById("coordinateControls").addEventListener("keydown", event => {
     if (event.key !== "Enter" || !event.target.dataset.coordinateJoint) return;
@@ -969,6 +1238,7 @@ function refreshOutputSizeUi() {
   updateCoordinateControls();
   updateReferenceControls();
   state.labelPlacements = {};
+  updatePrompt();
   requestAnimationFrame(resizeCanvas);
 }
 
@@ -1017,6 +1287,16 @@ function applySkeletonScale(nextScale) {
   document.getElementById("skeletonScaleValue").value = `${Math.round(nextScale * 100)}%`;
   updateCoordinateControls();
   render();
+  updatePrompt();
+}
+
+function applyCanvasFontSize(nextFontSize) {
+  if (!Number.isFinite(nextFontSize) || nextFontSize < 0.5 || nextFontSize > 2) return;
+  state.fontSize = nextFontSize;
+  state.labelPlacements = {};
+  document.getElementById("canvasFontSizeValue").value = `${Math.round(nextFontSize * 100)}%`;
+  render();
+  updatePrompt();
 }
 
 function handleHistoryShortcut(event) {
@@ -1035,7 +1315,7 @@ function handleHistoryShortcut(event) {
 
 function updateModeUi() {
   const rotationActive = state.rotatePose;
-  document.querySelectorAll("[data-coordinate-joint]").forEach(input => { input.disabled = state.moveWhole || rotationActive; });
+  updateCoordinateInputState();
   document.getElementById("linkedMove").disabled = rotationActive;
   document.getElementById("symmetricMove").disabled = rotationActive;
   document.getElementById("moveWhole").disabled = rotationActive;
@@ -1046,7 +1326,11 @@ function updateModeUi() {
   document.getElementById("skeletonScale").disabled = rotationActive;
   document.getElementById("editReferenceImage").disabled = rotationActive;
   document.getElementById("rotationAngleControl").hidden = !rotationActive;
-  document.querySelectorAll("[data-remove-limb], [data-limb-segment]").forEach(control => { control.disabled = rotationActive; });
+  document.querySelectorAll("[data-remove-limb]").forEach(control => { control.disabled = rotationActive; });
+  document.querySelectorAll("[data-limb-segment]").forEach(control => {
+    const limb = state.limbs.find(item => item.id === control.dataset.limbId);
+    control.disabled = rotationActive || (control.dataset.limbSegment === "distal" && limb && !limb.proximalVisible);
+  });
   updateAddLimbButtons();
   canvas.classList.toggle("background-edit", state.reference.editing);
   canvas.classList.toggle("rotation-edit", rotationActive);
@@ -1065,12 +1349,53 @@ function updateModeUi() {
 
 function updateCoordinateControls() {
   Object.entries(state.joints).forEach(([key, joint]) => {
-    const output = internalToOutput(joint);
+    const coordinate = internalToDisplayedCoordinate(joint);
     const xInput = document.querySelector(`[data-coordinate-joint="${key}"][data-coordinate-axis="x"]`);
     const yInput = document.querySelector(`[data-coordinate-joint="${key}"][data-coordinate-axis="y"]`);
-    if (xInput) xInput.value = formatIntegerCoordinate(output.x);
-    if (yInput) yInput.value = formatIntegerCoordinate(output.y);
+    if (xInput) xInput.value = formatIntegerCoordinate(coordinate.x);
+    if (yInput) yInput.value = formatIntegerCoordinate(coordinate.y);
   });
+  updateCoordinateInputState();
+}
+
+function getCoordinateOriginOutput() {
+  const { width, height } = getOutputSize();
+  if (state.coordinateOrigin === "center") return { x: width / 2, y: height / 2 };
+  if (state.coordinateOrigin === "bottomLeft") return { x: 0, y: height };
+  return internalToOutput(state.joints.waist);
+}
+
+function internalToDisplayedCoordinate(point) {
+  const output = internalToOutput(point);
+  const origin = getCoordinateOriginOutput();
+  return { x: output.x - origin.x, y: origin.y - output.y };
+}
+
+function displayedCoordinateToInternal(point) {
+  const origin = getCoordinateOriginOutput();
+  return outputToInternal({ x: origin.x + point.x, y: origin.y - point.y });
+}
+
+function updateCoordinateInputState() {
+  const lockedByMode = state.moveWhole || state.rotatePose;
+  document.querySelectorAll("[data-coordinate-joint]").forEach(input => {
+    input.disabled = lockedByMode || (state.coordinateOrigin === "waist" && input.dataset.coordinateJoint === "waist");
+  });
+}
+
+function updateCoordinateOriginUi() {
+  document.getElementById("coordinateOriginValue").value = coordinateOriginLabels[state.coordinateOrigin];
+  const button = document.getElementById("showJointCoordinatesButton");
+  button.setAttribute("aria-pressed", String(state.showJointCoordinates));
+  button.title = state.showJointCoordinates ? "関節上の座標表示を非表示にします" : "関節上に座標を表示します";
+}
+
+function cycleCoordinateOrigin() {
+  const currentIndex = coordinateOriginModes.indexOf(state.coordinateOrigin);
+  state.coordinateOrigin = coordinateOriginModes[(currentIndex + 1) % coordinateOriginModes.length];
+  updateCoordinateOriginUi();
+  updateCoordinateControls();
+  render();
 }
 
 function handleCoordinateChange(event) {
@@ -1094,23 +1419,23 @@ function handleCoordinateChange(event) {
     return;
   }
   beginHistoryTransaction();
-  const current = internalToOutput(state.joints[key]);
-  const nextOutput = {
+  const current = internalToDisplayedCoordinate(state.joints[key]);
+  const nextCoordinate = {
     x: axis === "x" ? value : current.x,
     y: axis === "y" ? value : current.y
   };
-  const deltaOutput = { x: nextOutput.x - current.x, y: nextOutput.y - current.y };
-  const nextInternal = outputToInternal(nextOutput);
+  const deltaCoordinate = { x: nextCoordinate.x - current.x, y: nextCoordinate.y - current.y };
+  const nextInternal = displayedCoordinateToInternal(nextCoordinate);
   state.joints[key].x = nextInternal.x;
   state.joints[key].y = nextInternal.y;
   const pairKey = getPairedJointKey(key);
   if ((state.linkedMove || state.symmetricMove) && pairKey) {
-    const currentPairOutput = internalToOutput(state.joints[pairKey]);
-    const pairOutput = {
-      x: currentPairOutput.x + (state.symmetricMove ? -deltaOutput.x : deltaOutput.x),
-      y: currentPairOutput.y + deltaOutput.y
+    const currentPairCoordinate = internalToDisplayedCoordinate(state.joints[pairKey]);
+    const pairCoordinate = {
+      x: currentPairCoordinate.x + (state.symmetricMove ? -deltaCoordinate.x : deltaCoordinate.x),
+      y: currentPairCoordinate.y + deltaCoordinate.y
     };
-    const pairInternal = outputToInternal(pairOutput);
+    const pairInternal = displayedCoordinateToInternal(pairCoordinate);
     state.joints[pairKey].x = pairInternal.x;
     state.joints[pairKey].y = pairInternal.y;
   }
@@ -1314,6 +1639,7 @@ function addLimb(part) {
   limb.distalVisible = true;
   limb.depth = "front";
   placeLimbNearExisting(limb);
+  insertLimbLayerKey(limb);
   ensureLabelVisibility();
   state.labelPlacements = {};
   rebuildAllDynamicControls();
@@ -1331,6 +1657,7 @@ function removeLimb(id) {
   const name = getLimbDisplayName(limb);
   beginHistoryTransaction();
   limb.present = false;
+  state.layerOrder = state.layerOrder.filter(key => key !== getLayerKeyForLimb(limb));
   state.selectedJoint = null;
   state.labelPlacements = {};
   rebuildAllDynamicControls();
@@ -1349,7 +1676,6 @@ function handleLimbSegmentChange(event) {
   beginHistoryTransaction();
   if (segment === "proximal") {
     limb.proximalVisible = event.target.checked;
-    limb.distalVisible = event.target.checked;
   } else {
     limb.distalVisible = event.target.checked;
     if (limb.distalVisible) limb.proximalVisible = true;
@@ -1445,6 +1771,7 @@ function segmentsCrossAwayFromSharedEndpoint(a, b, c, d) {
 }
 
 function resetPoseKeepingLimbComposition() {
+  const preservedLayerOrder = captureSemanticLayerOrder();
   const composition = Object.fromEntries(["rightArm", "leftArm", "rightLeg", "leftLeg"].map(part => [part,
     state.limbs.filter(limb => limb.present && getSlotPart(limb.slot) === part)
       .sort((a, b) => a.index - b.index)
@@ -1468,6 +1795,7 @@ function resetPoseKeepingLimbComposition() {
       if (index > 1) placeLimbNearExisting(limb);
     });
   });
+  restoreSemanticLayerOrder(preservedLayerOrder);
   state.symmetryAxisX = DESIGN_WIDTH / 2;
   state.skeletonScale = 1;
   state.labelPlacements = {};
@@ -1746,12 +2074,54 @@ function drawReferenceImage(target) {
 }
 
 function renderScene(target, options) {
-  getPresentLimbs().filter(limb => limb.depth === "back").forEach(limb => drawLimb(target, limb, true));
-  drawTorso(target);
-  drawHead(target);
-  getPresentLimbs().filter(limb => limb.depth !== "back").forEach(limb => drawLimb(target, limb, false));
-  drawJoints(target, options.selected, options.editor);
+  ensureLayerOrder();
+  [...state.layerOrder].reverse().forEach(key => drawPoseLayer(target, key, options));
+  // 関節マーカーは骨格線より常に上に描き、線で塗りつぶされないようにする。
+  Object.keys(state.joints).forEach(key => {
+    if (isJointRenderable(key)) drawJointMarker(target, key, options.selected, options.editor, false);
+  });
   if (options.labels) drawLabels(target, options.labelColor);
+  if (options.editor && state.showJointCoordinates) drawJointCoordinates(target);
+}
+
+function drawPoseLayer(target, key, options) {
+  const limb = getLimbFromLayerKey(key);
+  if (limb) {
+    const isBack = limb.depth === "back";
+    drawLimb(target, limb, isBack);
+    return;
+  }
+  if (key === "head") {
+    drawHead(target);
+    return;
+  }
+  if (key === "chest") {
+    drawTorsoLayer(target, "chest");
+    return;
+  }
+  if (key === "waist") {
+    drawTorsoLayer(target, "waist");
+  }
+}
+
+function drawJointCoordinates(target) {
+  target.save();
+  target.font = `800 ${12 * state.fontSize}px "Yu Gothic UI", Meiryo, sans-serif`;
+  target.textAlign = "center";
+  target.textBaseline = "bottom";
+  target.lineJoin = "round";
+  target.strokeStyle = "rgba(255, 255, 255, 0.96)";
+  target.lineWidth = Math.max(2, 4 * state.fontSize);
+  target.fillStyle = "#172226";
+  Object.entries(state.joints).forEach(([key, joint]) => {
+    if (!isJointRenderable(key)) return;
+    const coordinate = internalToDisplayedCoordinate(joint);
+    const text = `${formatIntegerCoordinate(coordinate.x)},${formatIntegerCoordinate(coordinate.y)}`;
+    const y = joint.y - (key === "head" ? 13 : 14) * state.fontSize;
+    target.strokeText(text, joint.x, y);
+    target.fillText(text, joint.x, y);
+  });
+  target.restore();
 }
 
 function getPoseColor(part, alpha = 1) {
@@ -1759,13 +2129,13 @@ function getPoseColor(part, alpha = 1) {
   return alpha < 1 ? hexToRgba(color, alpha) : color;
 }
 
-function drawTorso(target) {
+function drawTorsoLayer(target, layer) {
   target.save();
   target.strokeStyle = getPoseColor("torso");
   target.lineWidth = 14;
   target.lineCap = "round";
   target.lineJoin = "round";
-  torsoBones.forEach(bone => {
+  torsoLayerBones[layer].forEach(bone => {
     target.beginPath();
     target.moveTo(state.joints[bone.a].x, state.joints[bone.a].y);
     target.lineTo(state.joints[bone.b].x, state.joints[bone.b].y);
@@ -1819,7 +2189,7 @@ function drawHead(target) {
   const head = state.joints.head;
   const headRadius = getHeadRadius();
   target.save();
-  target.fillStyle = state.poseBlack ? "#000000" : hexToRgba(state.colors.head, 0.23);
+  target.fillStyle = getPoseColor("head");
   target.strokeStyle = getPoseColor("head");
   target.lineWidth = 11;
   target.beginPath();
@@ -1833,7 +2203,8 @@ function drawHead(target) {
   const distance = Math.hypot(dx, dy);
   if (distance > headRadius) {
     target.moveTo(head.x + dx / distance * headRadius, head.y + dy / distance * headRadius);
-    target.lineTo(neck.x, neck.y);
+    const neckRadius = 9;
+    target.lineTo(neck.x - dx / distance * neckRadius, neck.y - dy / distance * neckRadius);
     target.stroke();
   }
   target.restore();
@@ -1843,33 +2214,30 @@ function getHeadRadius() {
   return HEAD_RADIUS * state.skeletonScale;
 }
 
-function drawJoints(target, selected, editor) {
-  Object.entries(state.joints).forEach(([key, joint]) => {
-    if (!isJointRenderable(key)) return;
-    target.save();
-    const limb = getLimbByJointKey(key);
-    const isBack = limb?.depth === "back";
-    target.globalAlpha = isBack ? 0.58 : 1;
-    if (editor && key === selected) {
-      target.fillStyle = hexToRgba("#f06449", 0.18);
-      target.beginPath();
-      target.arc(joint.x, joint.y, 17, 0, Math.PI * 2);
-      target.fill();
-    }
-    target.fillStyle = state.poseBlack && !editor ? "#000000" : "#fffefa";
-    target.strokeStyle = getPoseColor(joint.part);
-    target.lineWidth = 5;
+function drawJointMarker(target, key, selected, editor, isBack) {
+  const joint = state.joints[key];
+  if (!joint || !isJointRenderable(key)) return;
+  target.save();
+  target.globalAlpha = isBack ? 0.58 : 1;
+  if (editor && key === selected) {
+    target.fillStyle = hexToRgba("#f06449", 0.18);
     target.beginPath();
-    target.arc(joint.x, joint.y, key === "head" ? 8 : 9, 0, Math.PI * 2);
+    target.arc(joint.x, joint.y, 17, 0, Math.PI * 2);
     target.fill();
-    target.stroke();
-    target.restore();
-  });
+  }
+  target.fillStyle = state.poseBlack && !editor ? "#000000" : "#fffefa";
+  target.strokeStyle = getPoseColor(joint.part);
+  target.lineWidth = 5;
+  target.beginPath();
+  target.arc(joint.x, joint.y, key === "head" ? 8 : 9, 0, Math.PI * 2);
+  target.fill();
+  target.stroke();
+  target.restore();
 }
 
 function drawLabels(target, color) {
   target.save();
-  target.font = '700 13px "Yu Gothic UI", Meiryo, sans-serif';
+  target.font = `700 ${13 * state.fontSize}px "Yu Gothic UI", Meiryo, sans-serif`;
   target.textBaseline = "middle";
   target.textAlign = "center";
   const labelBackground = color === "#f5f5f2" ? "rgba(16, 20, 22, 0.86)" : "rgba(255, 254, 250, 0.88)";
@@ -1892,9 +2260,9 @@ function computeLabelLayout(target) {
     if (!isJointRenderable(key)) return;
     if (!state.labelVisibility[joint.label]) return;
     const metrics = target.measureText(joint.label);
-    const width = metrics.width + 12;
+    const width = metrics.width + 12 * state.fontSize;
     const measuredHeight = (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0);
-    const height = Math.max(LABEL_HEIGHT, measuredHeight + 7);
+    const height = Math.max(LABEL_HEIGHT * state.fontSize, measuredHeight + 7 * state.fontSize);
     const candidates = createLabelCandidates(key, joint, width, height);
     if (!candidates.length) {
       delete state.labelPlacements[key];
@@ -2104,48 +2472,64 @@ function exportPng() {
 }
 
 function generatePrompt() {
-  const visibleLimbs = getPresentLimbs();
+  const promptPartOrder = ["rightArm", "leftArm", "rightLeg", "leftLeg"];
+  const outputBounds = getVisibleFrameBounds();
+  const visibleLimbs = getPresentLimbs().filter(limb => limbIntersectsExportFrame(limb, outputBounds)).sort((a, b) => {
+    const partDifference = promptPartOrder.indexOf(getSlotPart(a.slot)) - promptPartOrder.indexOf(getSlotPart(b.slot));
+    return partDifference || a.index - b.index;
+  });
+  const visibleLimbParts = new Set(visibleLimbs.map(limb => getSlotPart(limb.slot)));
   const hasBackPart = visibleLimbs.some(limb => limb.depth === "back");
   const depthLines = visibleLimbs
-    .sort((a, b) => allLimbSlots.indexOf(a.slot) - allLimbSlots.indexOf(b.slot) || a.index - b.index)
-    .map(limb => `- ${getLimbDisplayName(limb)}：${limb.depth === "back" ? "奥（破線・薄い表示）" : "手前（実線表示）"}`)
+    .map(limb => `- ${getLimbDisplayName(limb)}：${limb.depth === "back" ? "奥（破線・薄）" : "手前（実線）"}`)
     .join("\n");
-  const hasExportedLabel = document.getElementById("exportLabels").checked
-    && Object.entries(state.joints).some(([key, joint]) => isJointRenderable(key) && state.labelVisibility[joint.label]);
-  const importantRule = hasExportedLabel
-    ? "重要：棒人間、文字ラベルは最終画像に描かず、棒人間の色も最終画像に反映しないでください。これらはポーズを説明するための補助記号です。"
-    : "重要：棒人間は最終画像に描かず、棒人間の色も最終画像に反映しないでください。これはポーズを説明するための補助記号です。";
-  const sideColorParts = [];
-  if (semanticLimbExists("rightArm")) sideColorParts.push("青い腕がキャラクターの右腕");
-  if (semanticLimbExists("rightLeg")) sideColorParts.push("緑の脚がキャラクターの右脚");
-  if (semanticLimbExists("leftArm")) sideColorParts.push("赤い腕がキャラクターの左腕");
-  if (semanticLimbExists("leftLeg")) sideColorParts.push("紫の脚がキャラクターの左脚");
-  const colorSideRule = `左右は必ず「キャラクター自身から見た左右」です。${sideColorParts.length ? `${sideColorParts.join("、")}です。` : ""}`;
-  const labelSideRule = state.poseBlack ? "左右は必ず「キャラクター自身から見た左右」です。画像内のR/L文字ラベルに従ってください。" : colorSideRule;
-  const labelRule = "画像内の文字ラベルは、キャラクター自身の身体部位を示しています。Rはキャラクター自身の右側（Right）、Lはキャラクター自身の左側（Left）を意味します。画像を見る側からの左右ではありません。例えば、R-Wristはキャラクター自身の右手首を意味します。";
+  const exportedLabelLayout = getExportedLabelLayout();
+  const hasExportedLabel = Object.keys(exportedLabelLayout).length > 0;
+  const rlExampleKey = getExportedRlLabelExample(exportedLabelLayout);
+  const descriptors = [];
+  if (!state.poseBlack) descriptors.push("【色】で身体部位とその左右を");
+  if (hasExportedLabel) descriptors.push("【文字ラベル】で頭部と関節と胴体の基準点を");
+  if (hasBackPart) descriptors.push("【線の状態】で腕と脚の前後関係を");
   const sections = [
-    "添付画像は、キャラクターのポーズを指定するための2D参照画像です。画像内の関節位置、手足の向き、身体の傾き、部位同士の位置関係を可能な限り忠実に再現してください。",
-    "この参照画像はポーズの指定にのみ使用し、画風、キャラクターの体型、外見、衣装などは別途指定された内容に従ってください。",
-    importantRule
+    "添付画像は、キャラクターのポーズを指定するための「ポーズ参考用2D画像」です。",
+    `「ポーズ参考用2D画像」はポーズの指定にのみ使用し、画風、キャラクターの体型、外見、衣装などは別途指定された内容に従ってください。${state.poseBlack && !hasExportedLabel && !hasBackPart ? "\n" : ""}`
   ];
+  if (descriptors.length) sections.push(`「ポーズ参考用2D画像」は、${descriptors.join("、")}示しています。\n`);
+  const importantSubjects = hasExportedLabel ? "棒人間、文字ラベル" : "棒人間";
+  const importantAction = state.poseBlack
+    ? `${importantSubjects}は最終画像に描かないでください。`
+    : `${importantSubjects}は最終画像に描かず、色も最終画像に反映しないでください。`;
+  const importantPronoun = "これら";
+  sections.push(`重要：${importantAction}${importantPronoun}はポーズを説明するための補助記号です。\n`);
   if (!state.poseBlack) {
     const colorLines = Object.entries(partDefinitions)
-      .filter(([key]) => !["rightArm", "leftArm", "rightLeg", "leftLeg"].includes(key) || semanticLimbExists(key))
+      .filter(([key]) => !["rightArm", "leftArm", "rightLeg", "leftLeg"].includes(key) || visibleLimbParts.has(key))
       .map(([key, definition]) => `- ${definition.label}：${state.colors[key]}（${colorName(key)}）`)
       .join("\n");
-    sections.push(`【色の意味】\n${colorLines}`);
-    sections.push(`${colorSideRule}${hasExportedLabel ? `\n${labelRule}` : ""}`);
-  } else if (hasExportedLabel) {
-    sections.push(`${labelSideRule}\n${labelRule}`);
+    sections.push(`【色の意味】\n${colorLines}\n\n左右は必ず「キャラクター自身から見た左右」です。${hasExportedLabel ? "\n" : ""}`);
+  }
+  if (hasExportedLabel) {
+    const addLabelToFinalBlank = state.poseBlack || !hasBackPart;
+    const labelLines = [
+      "【文字ラベル】",
+      "文字ラベルは、頭部と関節と胴体の基準点を識別するためのものです。それぞれの位置は対応する円形マーカーで示しています。"
+    ];
+    if (rlExampleKey) {
+      const exampleJoint = state.joints[rlExampleKey];
+      labelLines.push(`Rはキャラクター自身の右側（Right）、Lはキャラクター自身の左側（Left）を意味します。画像を見る側からの左右ではありません。例えば、${exampleJoint.label}はキャラクター自身の${exampleJoint.name}を意味します。`);
+    }
+    sections.push(`${labelLines.join("\n")}${hasBackPart || addLabelToFinalBlank ? "\n" : ""}`);
   }
   if (hasBackPart) {
-    sections.push(`【前後関係】\n${depthLines}\n前後関係は、身体部位が重なった場合の奥行きを示す情報です。奥と指定された部位は、重なりのある箇所で手前側の部位に隠れるように解釈してください。`);
+    sections.push(`【線の状態】\n線の状態は、身体部位同士の重なりにおける前後関係を示しています。\n実線で描かれた腕と脚はカメラに近い側・重なりの手前側で、破線で薄く描かれた腕と脚はカメラから遠い側・重なりの奥側を意味します。\n破線の部位も実際に存在する腕と脚であり、省略・欠損・動作軌跡を意味するものではありません。\n${depthLines}\n`);
   }
-  const correctionRule = hasBackPart
-    ? "人体として不自然な箇所は、指定した位置関係を保ちながら自然に補正してください。"
-    : "人体として不自然な箇所は、関節位置とポーズの意図を保ちながら自然に補正してください。";
-  sections.push(correctionRule);
-  promptOutput.value = sections.join("\n\n");
+  sections.push("「ポーズ参考用2D画像」は、3次元の人体を厳密に表現したものではなく、各関節の画面上での相対位置と接続関係を示す図です。");
+  sections.push(state.poseBlack
+    ? "各関節の相対位置、手足の曲がる方向を可能な限り維持してください。"
+    : "各関節の相対位置、手足の曲がる方向、身体部位の重なり順を可能な限り維持してください。");
+  sections.push("奥行きや身体の立体構造は、指定された位置関係に矛盾しないよう自然な人体として解釈してください。");
+  sections.push("人体として不自然な箇所は、ポーズの主要な特徴を変更しない範囲で自然に補正してください。");
+  promptOutput.value = sections.join("\n");
 }
 
 function colorName(key) {
