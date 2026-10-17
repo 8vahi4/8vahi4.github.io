@@ -235,6 +235,9 @@
             <label><input id="exportLabels" type="checkbox" checked> 関節ラベルも含める</label>
             <label><input id="poseBlack" type="checkbox"> ポーズ黒化</label>
           </div>
+          <button id="previewButton" class="button button-ghost button-full preview-button" type="button">
+            <span>プレビュー</span>
+          </button>
           <button id="exportButton" class="button button-primary button-full" type="button">
             <span>画像を保存</span>
           </button>
@@ -257,6 +260,18 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="previewModal" class="preview-modal" role="dialog" aria-modal="true" aria-labelledby="preview-title" hidden>
+    <div id="previewScroller" class="preview-scroller" tabindex="-1">
+      <div id="previewContent" class="preview-content">
+        <canvas id="previewCanvas" class="preview-canvas" aria-label="保存画像の実寸プレビュー"></canvas>
+      </div>
+    </div>
+    <div class="preview-info" aria-live="polite">
+      <strong id="preview-title">保存画像プレビュー</strong>
+      <span id="previewSize"></span>
+      <small>ドラッグまたはスクロールバーで移動。クリック、ESCキーで閉じる</small>
+    </div>
+  </div>
   <div id="helpModal" class="help-modal" hidden>
     <section class="help-dialog" role="dialog" aria-modal="true" aria-labelledby="help-title">
       <button id="closeHelpButton" class="help-close" type="button" aria-label="使い方を閉じる">×</button>

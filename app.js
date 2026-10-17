@@ -1031,7 +1031,66 @@ function bindEvents() {
   document.getElementById("helpButton").addEventListener("click", () => { helpModal.hidden = false; });
   document.getElementById("closeHelpButton").addEventListener("click", closeHelp);
   helpModal.addEventListener("click", event => { if (event.target === helpModal) closeHelp(); });
-  document.addEventListener("keydown", event => { if (event.key === "Escape" && !helpModal.hidden) closeHelp(); });
+
+  const previewModal = document.getElementById("previewModal");
+  const previewScroller = document.getElementById("previewScroller");
+  let previewDrag = null;
+  let suppressPreviewClick = false;
+  const closePreview = () => {
+    if (previewModal.hidden) return;
+    previewModal.hidden = true;
+    document.body.classList.remove("preview-open");
+    document.getElementById("previewButton").focus();
+  };
+  document.getElementById("previewButton").addEventListener("click", openPreview);
+  previewScroller.addEventListener("click", () => {
+    if (suppressPreviewClick) return;
+    closePreview();
+  });
+  previewScroller.addEventListener("pointerdown", event => {
+    if (event.button !== 0) return;
+    previewDrag = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      scrollLeft: previewScroller.scrollLeft,
+      scrollTop: previewScroller.scrollTop,
+      moved: false
+    };
+    previewScroller.setPointerCapture(event.pointerId);
+  });
+  previewScroller.addEventListener("pointermove", event => {
+    if (!previewDrag || previewDrag.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - previewDrag.x;
+    const deltaY = event.clientY - previewDrag.y;
+    if (!previewDrag.moved && Math.hypot(deltaX, deltaY) < 4) return;
+    previewDrag.moved = true;
+    previewScroller.classList.add("is-dragging");
+    previewScroller.scrollLeft = previewDrag.scrollLeft - deltaX;
+    previewScroller.scrollTop = previewDrag.scrollTop - deltaY;
+    event.preventDefault();
+  });
+  const finishPreviewDrag = event => {
+    if (!previewDrag || previewDrag.pointerId !== event.pointerId) return;
+    const moved = previewDrag.moved;
+    previewDrag = null;
+    previewScroller.classList.remove("is-dragging");
+    if (previewScroller.hasPointerCapture(event.pointerId)) previewScroller.releasePointerCapture(event.pointerId);
+    if (moved) {
+      suppressPreviewClick = true;
+      setTimeout(() => { suppressPreviewClick = false; }, 0);
+    }
+  };
+  previewScroller.addEventListener("pointerup", finishPreviewDrag);
+  previewScroller.addEventListener("pointercancel", finishPreviewDrag);
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    if (!previewModal.hidden) {
+      closePreview();
+      return;
+    }
+    if (!helpModal.hidden) closeHelp();
+  });
 
   document.getElementById("depthControls").addEventListener("click", event => {
     const button = event.target.closest("[data-depth-limb]");
@@ -2674,14 +2733,14 @@ function updatePoseBlackUi() {
   }
 }
 
-function exportPng() {
+function renderOutputCanvas(output) {
   const { width, height } = getOutputSize();
   const background = document.getElementById("exportBackground").value;
   const labels = document.getElementById("exportLabels").checked;
-  const output = document.createElement("canvas");
   output.width = width;
   output.height = height;
   const outputContext = output.getContext("2d");
+  outputContext.clearRect(0, 0, width, height);
   if (background !== "transparent") {
     outputContext.fillStyle = background === "black" ? "#101416" : "#ffffff";
     outputContext.fillRect(0, 0, width, height);
@@ -2691,6 +2750,30 @@ function exportPng() {
   outputContext.setTransform(transform.scale, 0, 0, transform.scale, transform.offsetX, transform.offsetY);
   renderScene(outputContext, { labels, labelColor: contrastColor(background), selected: null, editor: false });
   outputContext.restore();
+  return { width, height, background };
+}
+
+function openPreview() {
+  const previewModal = document.getElementById("previewModal");
+  const previewScroller = document.getElementById("previewScroller");
+  const previewCanvas = document.getElementById("previewCanvas");
+  const { width, height, background } = renderOutputCanvas(previewCanvas);
+  previewCanvas.style.width = `${width}px`;
+  previewCanvas.style.height = `${height}px`;
+  previewCanvas.classList.toggle("is-transparent", background === "transparent");
+  document.getElementById("previewSize").textContent = `${width} × ${height} px`;
+  previewModal.hidden = false;
+  document.body.classList.add("preview-open");
+  requestAnimationFrame(() => {
+    previewScroller.scrollLeft = 56;
+    previewScroller.scrollTop = 56;
+    previewScroller.focus({ preventScroll: true });
+  });
+}
+
+function exportPng() {
+  const output = document.createElement("canvas");
+  const { width, height } = renderOutputCanvas(output);
   output.toBlob(blob => {
     if (!blob) {
       showToast("PNGの作成に失敗しました");
