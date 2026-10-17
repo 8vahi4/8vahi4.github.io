@@ -33,12 +33,9 @@
       <div class="coordinate-list" id="coordinateControls"></div>
     </aside>
 
-    <section class="workspace-panel" aria-labelledby="canvas-title">
+    <section class="workspace-panel" aria-label="編集エリア">
       <div class="panel-heading">
         <div class="workspace-lead">
-          <div class="workspace-heading-copy">
-            <h2 id="canvas-title">編集エリア</h2>
-          </div>
           <section class="pose-storage-panel" aria-labelledby="pose-storage-title">
             <h3 id="pose-storage-title">ポーズをセーブ/ロード</h3>
             <div class="pose-slot-list">
@@ -110,8 +107,14 @@
               <button id="resetPoseButton" class="button button-ghost" type="button">ポーズ初期化</button>
               <button id="resetAllButton" class="button button-ghost danger-button" type="button">全初期化</button>
             </div>
-            <button id="undoButton" class="button button-ghost" type="button" disabled>操作を戻す</button>
-            <button id="redoButton" class="button button-ghost" type="button" disabled>操作を進める</button>
+            <div class="history-step-actions">
+              <button id="undoButton" class="button button-ghost" type="button" disabled>操作を戻す</button>
+              <button id="redoButton" class="button button-ghost" type="button" disabled>進める</button>
+            </div>
+            <label class="mode-chip label-manual-mode-chip" title="関節ラベルを手動で配置します">
+              <input id="manualLabelMode" type="checkbox">
+              <span>ラベル手動</span>
+            </label>
           </div>
         </div>
       </div>
@@ -287,6 +290,8 @@
         <p>オンの間、ポーズをドラッグまたは角度入力で回転させられます。</p>
         <h4>左右入替</h4>
         <p>ポイントの位置を動かさず、色とR/Lを交換します。<br>「左右入替」は全て入れ替え=キャラクターを背後から見るポーズになります。<br>「腕/脚だけ」は、振り返りなど体をひねるポーズを作れます。<br>「脚だけ左右入替」すると「上半身はこちら向きだが下半身は画面奥向き」=振り返りになります。<br>(そのままでは腰から180°回転する事になるので調整してください。)</p>
+        <h4>ラベル手動</h4>
+        <p>ONにすると関節ラベルは自動で動かず、ドラッグで動かせるようになります。<br>ラベルをダブルクリックすると固定します。<br>固定されたラベルは「ラベル手動」をOFFにしてもそのままになります。</p>
         <h4>操作を戻す/進める</h4>
         <p>ポイントの移動などの操作を1つ前に戻す/先に進めます。<br>キーボードのCtrl+Z/Yでも実行できます。</p>
         <h4>拡大率</h4>

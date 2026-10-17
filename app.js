@@ -121,8 +121,14 @@ const state = {
   coordinateOrigin: "waist",
   showJointCoordinates: false,
   selectedJoint: null,
+  selectedLabel: null,
   dragAction: null,
   lastDragPoint: null,
+  manualLabelMode: false,
+  manualLabelPositions: {},
+  fixedLabels: {},
+  lastLabelLayout: {},
+  lastLabelDrawOrder: [],
   reference: {
     image: null,
     url: null,
@@ -154,6 +160,10 @@ function cloneJoints(source) {
 
 function cloneLimbs(source) {
   return source.map(limb => ({ ...limb }));
+}
+
+function cloneLabelPositions(source) {
+  return Object.fromEntries(Object.entries(source || {}).map(([key, position]) => [key, { x: position.x, y: position.y }]));
 }
 
 function getSlotPart(slot) {
@@ -329,6 +339,8 @@ function capturePoseSnapshot() {
     joints: cloneJoints(state.joints),
     limbs: cloneLimbs(state.limbs),
     labelVisibility: { ...state.labelVisibility },
+    manualLabelPositions: cloneLabelPositions(state.manualLabelPositions),
+    fixedLabels: { ...state.fixedLabels },
     layerOrder: [...state.layerOrder],
     symmetryAxisX: state.symmetryAxisX,
     skeletonScale: state.skeletonScale,
@@ -359,11 +371,16 @@ function restorePoseSnapshot(snapshot) {
   state.joints = cloneJoints(snapshot.joints);
   state.limbs = cloneLimbs(snapshot.limbs);
   state.labelVisibility = { ...snapshot.labelVisibility };
+  state.manualLabelPositions = cloneLabelPositions(snapshot.manualLabelPositions || {});
+  state.fixedLabels = { ...(snapshot.fixedLabels || {}) };
   state.layerOrder = [...(snapshot.layerOrder || INITIAL_LAYER_ORDER)];
   state.symmetryAxisX = snapshot.symmetryAxisX;
   state.skeletonScale = snapshot.skeletonScale;
   state.fontSize = snapshot.fontSize ?? 1;
   state.labelPlacements = {};
+  state.lastLabelLayout = {};
+  state.lastLabelDrawOrder = [];
+  state.selectedLabel = null;
   state.selectedJoint = null;
   document.getElementById("skeletonScale").value = String(Math.round(state.skeletonScale * 100));
   document.getElementById("skeletonScaleValue").value = `${Math.round(state.skeletonScale * 100)}%`;
@@ -398,6 +415,8 @@ function captureStoredPoseData() {
       })),
       slotParts: Object.fromEntries(allLimbSlots.map(slot => [slot, getSlotPart(slot)])),
       labelVisibility: { ...state.labelVisibility },
+      manualLabelPositions: cloneLabelPositions(state.manualLabelPositions),
+      fixedLabels: { ...state.fixedLabels },
       layerOrder: [...state.layerOrder],
       symmetryAxisX: state.symmetryAxisX,
       skeletonScale: state.skeletonScale,
@@ -503,6 +522,32 @@ function normalizeStoredPoseData(value) {
     labelVisibility[label] = rawVisibility[label] !== false;
   }
 
+  const manualLabelPositions = {};
+  const rawManualPositions = rawPose.manualLabelPositions;
+  if (rawManualPositions != null) {
+    if (typeof rawManualPositions !== "object" || Array.isArray(rawManualPositions)) return null;
+    for (const [key, position] of Object.entries(rawManualPositions)) {
+      if (!jointKeys.has(key) || !position || typeof position !== "object" || Array.isArray(position)) return null;
+      const x = Number(position.x);
+      const y = Number(position.y);
+      if (![x, y].every(number => Number.isFinite(number) && Math.abs(number) <= 2000000)) return null;
+      manualLabelPositions[key] = { x, y };
+    }
+  }
+
+  const fixedLabels = {};
+  const rawFixedLabels = rawPose.fixedLabels;
+  if (rawFixedLabels != null) {
+    if (typeof rawFixedLabels !== "object" || Array.isArray(rawFixedLabels)) return null;
+    for (const [key, fixed] of Object.entries(rawFixedLabels)) {
+      if (!jointKeys.has(key) || typeof fixed !== "boolean") return null;
+      if (fixed) {
+        if (!manualLabelPositions[key]) return null;
+        fixedLabels[key] = true;
+      }
+    }
+  }
+
   const validLayerKeys = new Set([
     ...limbs.filter(limb => limb.present).map(limb => `limb:${limb.id}`),
     ...FIXED_LAYER_KEYS
@@ -533,7 +578,7 @@ function normalizeStoredPoseData(value) {
   if (typeof rawOutput.exportLabels !== "boolean" || typeof rawOutput.poseBlack !== "boolean") return null;
 
   return {
-    pose: { joints, limbs, slotParts, labelVisibility, layerOrder, symmetryAxisX, skeletonScale, fontSize },
+    pose: { joints, limbs, slotParts, labelVisibility, manualLabelPositions, fixedLabels, layerOrder, symmetryAxisX, skeletonScale, fontSize },
     output: {
       width,
       height,
@@ -553,10 +598,12 @@ function restoreStoredPoseData(value) {
   state.linkedMove = false;
   state.symmetricMove = false;
   state.moveWhole = false;
+  state.manualLabelMode = false;
   state.reference.editing = false;
   state.dragAction = null;
   state.lastDragPoint = null;
   state.selectedJoint = null;
+  state.selectedLabel = null;
   canvas.classList.remove("dragging");
 
   state.joints = cloneJoints(initialJoints);
@@ -575,6 +622,8 @@ function restoreStoredPoseData(value) {
     state.joints[key].y = point.y;
   });
   state.labelVisibility = { ...data.pose.labelVisibility };
+  state.manualLabelPositions = cloneLabelPositions(data.pose.manualLabelPositions);
+  state.fixedLabels = { ...data.pose.fixedLabels };
   state.layerOrder = [...data.pose.layerOrder];
   state.symmetryAxisX = data.pose.symmetryAxisX;
   state.skeletonScale = data.pose.skeletonScale;
@@ -582,6 +631,8 @@ function restoreStoredPoseData(value) {
   state.outputSize = { width: data.output.width, height: data.output.height };
   state.poseBlack = data.output.poseBlack;
   state.labelPlacements = {};
+  state.lastLabelLayout = {};
+  state.lastLabelDrawOrder = [];
   state.historyStart = null;
   state.undoStack.length = 0;
   state.redoStack.length = 0;
@@ -589,6 +640,7 @@ function restoreStoredPoseData(value) {
   document.getElementById("linkedMove").checked = false;
   document.getElementById("symmetricMove").checked = false;
   document.getElementById("moveWhole").checked = false;
+  document.getElementById("manualLabelMode").checked = false;
   document.getElementById("rotatePose").checked = false;
   document.getElementById("rotationAngle").value = "0";
   document.getElementById("editReferenceImage").checked = false;
@@ -1070,6 +1122,7 @@ function bindEvents() {
       event.target.checked = false;
       return;
     }
+    if (event.target.checked && state.manualLabelMode) setManualLabelMode(false);
     state.moveWhole = event.target.checked;
     if (state.moveWhole) {
       state.reference.editing = false;
@@ -1078,8 +1131,14 @@ function bindEvents() {
     updateModeUi();
   });
   document.getElementById("rotatePose").addEventListener("change", event => {
-    if (event.target.checked) enterRotationMode();
+    if (event.target.checked) {
+      if (state.manualLabelMode) setManualLabelMode(false);
+      enterRotationMode();
+    }
     else exitRotationMode();
+  });
+  document.getElementById("manualLabelMode").addEventListener("change", event => {
+    setManualLabelMode(event.target.checked);
   });
   const rotationAngle = document.getElementById("rotationAngle");
   rotationAngle.addEventListener("change", applyRotationAngleInput);
@@ -1135,6 +1194,7 @@ function bindEvents() {
     render();
   });
   document.getElementById("editReferenceImage").addEventListener("change", event => {
+    if (event.target.checked && state.manualLabelMode) setManualLabelMode(false);
     state.reference.editing = event.target.checked && Boolean(state.reference.image);
     if (state.reference.editing) {
       state.moveWhole = false;
@@ -1334,6 +1394,8 @@ function updateModeUi() {
   updateAddLimbButtons();
   canvas.classList.toggle("background-edit", state.reference.editing);
   canvas.classList.toggle("rotation-edit", rotationActive);
+  canvas.classList.toggle("label-manual-edit", state.manualLabelMode);
+  document.getElementById("manualLabelMode").checked = state.manualLabelMode;
   const tip = document.getElementById("canvasTip");
   if (rotationActive) {
     tip.innerHTML = '<span aria-hidden="true">⟳</span> ドラッグでポーズを回転';
@@ -1341,10 +1403,38 @@ function updateModeUi() {
     tip.innerHTML = '<span aria-hidden="true">↔</span> 見本画像をドラッグで移動';
   } else if (state.moveWhole) {
     tip.innerHTML = '<span aria-hidden="true">✥</span> ドラッグで全体を移動';
+  } else if (state.manualLabelMode) {
+    tip.innerHTML = '<span aria-hidden="true">↖</span> ラベルをドラッグで移動、Wクリックで固定';
   } else {
     tip.innerHTML = '<span aria-hidden="true">↖</span> 関節点をドラッグで移動';
   }
   requestAnimationFrame(syncCoordinateListToCanvas);
+}
+
+function setManualLabelMode(enabled) {
+  if (enabled === state.manualLabelMode) return;
+  if (enabled) {
+    if (state.rotatePose) exitRotationMode();
+    state.moveWhole = false;
+    state.reference.editing = false;
+    document.getElementById("moveWhole").checked = false;
+    document.getElementById("editReferenceImage").checked = false;
+    if (!Object.keys(state.lastLabelLayout).length) render();
+    Object.entries(state.lastLabelLayout).forEach(([key, box]) => {
+      if (!state.manualLabelPositions[key]) state.manualLabelPositions[key] = { x: box.x, y: box.y };
+    });
+    state.manualLabelMode = true;
+  } else {
+    state.manualLabelMode = false;
+    Object.keys(state.manualLabelPositions).forEach(key => {
+      if (!state.fixedLabels[key]) delete state.manualLabelPositions[key];
+    });
+    state.labelPlacements = {};
+  }
+  state.selectedLabel = null;
+  updateModeUi();
+  render();
+  updatePrompt();
 }
 
 function updateCoordinateControls() {
@@ -1798,8 +1888,15 @@ function resetPoseKeepingLimbComposition() {
   restoreSemanticLayerOrder(preservedLayerOrder);
   state.symmetryAxisX = DESIGN_WIDTH / 2;
   state.skeletonScale = 1;
+  state.manualLabelMode = false;
+  state.manualLabelPositions = {};
+  state.fixedLabels = {};
   state.labelPlacements = {};
+  state.lastLabelLayout = {};
+  state.lastLabelDrawOrder = [];
   state.selectedJoint = null;
+  state.selectedLabel = null;
+  document.getElementById("manualLabelMode").checked = false;
   document.getElementById("skeletonScale").value = "100";
   document.getElementById("skeletonScaleValue").value = "100%";
   rebuildAllDynamicControls();
@@ -1910,8 +2007,35 @@ function nearestJoint(point, radius = 19) {
   return nearest;
 }
 
+function labelAtPoint(point) {
+  const drawOrder = state.lastLabelDrawOrder.length ? state.lastLabelDrawOrder : Object.keys(state.lastLabelLayout);
+  for (const key of [...drawOrder].reverse()) {
+    const box = state.lastLabelLayout[key];
+    if (box && pointInRectangle(point, box.x, box.x + box.width, box.y, box.y + box.height)) return key;
+  }
+  return null;
+}
+
 function handlePointerDown(event) {
   const point = canvasPoint(event);
+  if (state.manualLabelMode) {
+    const labelKey = labelAtPoint(point);
+    if (labelKey) {
+      event.preventDefault();
+      state.selectedLabel = labelKey;
+      if (state.fixedLabels[labelKey]) {
+        render();
+        return;
+      }
+      state.dragAction = "label";
+      beginHistoryTransaction();
+      state.lastDragPoint = point;
+      canvas.classList.add("dragging");
+      canvas.setPointerCapture(event.pointerId);
+      render();
+      return;
+    }
+  }
   if (state.rotatePose && state.rotationSession) {
     const pivot = state.rotationSession.pivot;
     state.dragAction = "rotate";
@@ -1959,11 +2083,27 @@ function handlePointerMove(event) {
     moveWholeSkeleton(dx, dy);
   } else if (state.dragAction === "joint") {
     moveSelectedJoint(point);
+  } else if (state.dragAction === "label") {
+    moveSelectedLabel(dx, dy);
   }
   state.lastDragPoint = point;
   updateCoordinateControls();
   render();
   updatePrompt();
+}
+
+function moveSelectedLabel(dx, dy) {
+  const key = state.selectedLabel;
+  const box = state.lastLabelLayout[key];
+  if (!key || !box || state.fixedLabels[key]) return;
+  const bounds = getVisibleFrameBounds();
+  const constrained = constrainRectangleToBounds({
+    x: (state.manualLabelPositions[key]?.x ?? box.x) + dx,
+    y: (state.manualLabelPositions[key]?.y ?? box.y) + dy,
+    width: box.width,
+    height: box.height
+  }, bounds);
+  state.manualLabelPositions[key] = { x: constrained.x, y: constrained.y };
 }
 
 function moveSelectedJoint(point) {
@@ -1998,12 +2138,31 @@ function handlePointerUp(event) {
   state.rotationDrag = null;
   canvas.classList.remove("dragging");
   if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
-  if (completedAction === "joint" || completedAction === "whole" || completedAction === "rotate") commitHistoryTransaction();
+  if (["joint", "whole", "rotate", "label"].includes(completedAction)) commitHistoryTransaction();
 }
 
 function handleJointDoubleClick(event) {
   if (state.moveWhole || state.reference.editing || state.rotatePose) return;
-  const key = nearestJoint(canvasPoint(event));
+  const point = canvasPoint(event);
+  if (state.manualLabelMode) {
+    const labelKey = labelAtPoint(point);
+    if (labelKey) {
+      event.preventDefault();
+      beginHistoryTransaction();
+      if (state.fixedLabels[labelKey]) {
+        delete state.fixedLabels[labelKey];
+      } else {
+        const box = state.lastLabelLayout[labelKey];
+        if (box && !state.manualLabelPositions[labelKey]) state.manualLabelPositions[labelKey] = { x: box.x, y: box.y };
+        state.fixedLabels[labelKey] = true;
+      }
+      commitHistoryTransaction();
+      render();
+      showToast(`${state.joints[labelKey].label}を${state.fixedLabels[labelKey] ? "固定しました" : "固定解除しました"}`);
+      return;
+    }
+  }
+  const key = nearestJoint(point);
   if (!key) return;
   event.preventDefault();
   const label = state.joints[key].label;
@@ -2080,7 +2239,7 @@ function renderScene(target, options) {
   Object.keys(state.joints).forEach(key => {
     if (isJointRenderable(key)) drawJointMarker(target, key, options.selected, options.editor, false);
   });
-  if (options.labels) drawLabels(target, options.labelColor);
+  if (options.labels) drawLabels(target, options.labelColor, options);
   if (options.editor && state.showJointCoordinates) drawJointCoordinates(target);
 }
 
@@ -2235,22 +2394,28 @@ function drawJointMarker(target, key, selected, editor, isBack) {
   target.restore();
 }
 
-function drawLabels(target, color) {
+function drawLabels(target, color, options = {}) {
   target.save();
   target.font = `700 ${13 * state.fontSize}px "Yu Gothic UI", Meiryo, sans-serif`;
   target.textBaseline = "middle";
   target.textAlign = "center";
-  const labelBackground = color === "#f5f5f2" ? "rgba(16, 20, 22, 0.86)" : "rgba(255, 254, 250, 0.88)";
   const layout = computeLabelLayout(target);
-  Object.entries(layout).forEach(([key, box]) => {
+  const drawOrder = getLabelDrawOrder(layout);
+  drawOrder.forEach(key => {
+    const box = layout[key];
     const joint = state.joints[key];
-    target.fillStyle = labelBackground;
+    target.fillStyle = getLabelBackgroundColor(key, color, Boolean(options.editor));
     roundRect(target, box.x, box.y, box.width, box.height, 5);
     target.fill();
     target.fillStyle = color;
     target.fillText(joint.label, box.x + box.width / 2, box.y + box.height / 2 + 0.5);
+    if (options.editor && state.fixedLabels[key]) drawLabelLock(target, box);
   });
   target.restore();
+  if (options.editor) {
+    state.lastLabelLayout = Object.fromEntries(Object.entries(layout).map(([key, box]) => [key, { ...box }]));
+    state.lastLabelDrawOrder = [...drawOrder];
+  }
 }
 
 function computeLabelLayout(target) {
@@ -2263,6 +2428,22 @@ function computeLabelLayout(target) {
     const width = metrics.width + 12 * state.fontSize;
     const measuredHeight = (metrics.actualBoundingBoxAscent || 0) + (metrics.actualBoundingBoxDescent || 0);
     const height = Math.max(LABEL_HEIGHT * state.fontSize, measuredHeight + 7 * state.fontSize);
+    const useManualPosition = state.manualLabelMode || state.fixedLabels[key];
+    if (useManualPosition && state.manualLabelPositions[key]) {
+      const manualBox = constrainRectangleToBounds({
+        id: "manual",
+        x: state.manualLabelPositions[key].x,
+        y: state.manualLabelPositions[key].y,
+        width,
+        height,
+        distance: 0,
+        directionIndex: 0
+      }, getVisibleFrameBounds());
+      state.manualLabelPositions[key] = { x: manualBox.x, y: manualBox.y };
+      layout[key] = manualBox;
+      placedBoxes.push(manualBox);
+      return;
+    }
     const candidates = createLabelCandidates(key, joint, width, height);
     if (!candidates.length) {
       delete state.labelPlacements[key];
@@ -2278,10 +2459,65 @@ function computeLabelLayout(target) {
     const current = scored.find(candidate => candidate.id === currentId);
     if (current && current.score <= selected.score + 350) selected = current;
     state.labelPlacements[key] = selected.id;
+    if (state.manualLabelMode) state.manualLabelPositions[key] = { x: selected.x, y: selected.y };
     layout[key] = selected;
     placedBoxes.push(selected);
   });
   return layout;
+}
+
+function getLabelBackgroundColor(key, outputTextColor, editor) {
+  if (!editor) return outputTextColor === "#f5f5f2" ? "rgba(16, 20, 22, 0.86)" : "rgba(255, 254, 250, 0.88)";
+  const part = state.joints[key]?.part;
+  if (part === "head") return "#fdf6e4";
+  if (part === "rightArm") return "#e7e9ef";
+  if (part === "leftArm") return "#f7e7e4";
+  if (part === "rightLeg") return "#e7eee5";
+  if (part === "leftLeg") return "#ebe7ed";
+  return "rgba(255, 254, 250, 0.88)";
+}
+
+function getJointLayerKey(key) {
+  if (key === "head") return "head";
+  if (key === "neck" || key === "chest") return "chest";
+  if (key === "waist") return "waist";
+  const anchorSlot = allLimbSlots.find(slot => limbSlotDefinitions[slot].anchorKey === key);
+  if (anchorSlot) {
+    const owner = getPresentLimbs(anchorSlot).sort((a, b) => a.index - b.index)[0];
+    return owner ? getLayerKeyForLimb(owner) : null;
+  }
+  const limb = getLimbByJointKey(key);
+  return limb?.present ? getLayerKeyForLimb(limb) : null;
+}
+
+function getLabelDrawOrder(layout) {
+  const keys = Object.keys(layout);
+  if (!state.manualLabelMode) return keys;
+  const originalOrder = new Map(keys.map((key, index) => [key, index]));
+  return keys.sort((a, b) => {
+    const aIndex = state.layerOrder.indexOf(getJointLayerKey(a));
+    const bIndex = state.layerOrder.indexOf(getJointLayerKey(b));
+    const normalizedA = aIndex === -1 ? state.layerOrder.length : aIndex;
+    const normalizedB = bIndex === -1 ? state.layerOrder.length : bIndex;
+    return normalizedB - normalizedA || originalOrder.get(a) - originalOrder.get(b);
+  });
+}
+
+function drawLabelLock(target, box) {
+  const scale = Math.max(0.8, state.fontSize);
+  const width = 7 * scale;
+  const height = 6 * scale;
+  const x = box.x + box.width - width - 2 * scale;
+  const y = box.y + 2 * scale;
+  target.save();
+  target.strokeStyle = "#70463c";
+  target.fillStyle = "#70463c";
+  target.lineWidth = 1.35 * scale;
+  target.beginPath();
+  target.arc(x + width / 2, y + 2.4 * scale, 2.4 * scale, Math.PI, 0);
+  target.stroke();
+  target.fillRect(x, y + 2.2 * scale, width, height);
+  target.restore();
 }
 
 function createLabelCandidates(key, joint, width, height) {

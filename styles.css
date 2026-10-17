@@ -88,8 +88,6 @@ h2 { font-size: 1.32rem; }
 .canvas-actions, .prompt-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .canvas-actions { align-items: flex-start; justify-content: flex-end; }
 .workspace-lead { display: flex; align-items: flex-start; gap: 14px; min-width: 0; }
-.workspace-heading-copy { display: flex; flex-direction: column; justify-content: space-between; align-items: flex-start; gap: 12px; }
-#canvas-title { white-space: nowrap; }
 .panel-close-button {
   width: 32px;
   height: 32px;
@@ -152,6 +150,8 @@ h2 { font-size: 1.32rem; }
 .pose-action-groups { display: grid; gap: 6px; }
 .mode-action-row, .transform-action-row { display: flex; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
 .transform-button { min-height: 32px; padding: 6px 9px; font-size: 0.7rem; }
+.label-manual-mode-chip { width: 100%; }
+.label-manual-mode-chip span { width: 100%; min-height: 32px; justify-content: center; padding: 6px 9px; font-size: 0.7rem; }
 .history-actions {
   display: grid;
   grid-template-columns: 1fr;
@@ -160,6 +160,7 @@ h2 { font-size: 1.32rem; }
 }
 .history-actions .button { width: 100%; }
 .reset-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.history-step-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .coordinate-origin-controls {
   display: grid;
   grid-template-columns: auto 64px auto;
@@ -286,6 +287,7 @@ h2 { font-size: 1.32rem; }
 }
 #poseCanvas.dragging { cursor: grabbing; }
 #poseCanvas.background-edit { cursor: move; }
+#poseCanvas.label-manual-edit { cursor: default; }
 .canvas-tip {
   display: inline-flex;
   align-items: center;
@@ -359,11 +361,13 @@ h2 { font-size: 1.32rem; }
 .range-control output { color: var(--ink); }
 .range-control input { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
 .canvas-scale-controls {
+  --scale-controls-inset: 102px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
-  width: calc(100% + 198px);
+  width: calc(100% + 198px - var(--scale-controls-inset));
   margin-top: 2px;
+  transform: translateX(var(--scale-controls-inset));
 }
 .canvas-scale-controls .range-control {
   min-width: 0;
@@ -633,6 +637,7 @@ select:focus, textarea:focus, button:focus-visible, input:focus-visible {
 
 @media (max-width: 1280px) {
   .app-shell { grid-template-columns: minmax(340px, 360px) minmax(0, 1fr); grid-template-areas: "coordinates workspace" "settings settings" "prompt prompt"; }
+  .canvas-scale-controls { width: 100%; transform: none; }
   .settings-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .settings-heading { grid-column: 1 / -1; }
   .settings-card { margin: 0; }
@@ -662,7 +667,6 @@ select:focus, textarea:focus, button:focus-visible, input:focus-visible {
   .settings-heading, .export-card { grid-column: auto; }
   .panel-heading, .prompt-heading { align-items: flex-start; }
   .panel-heading { flex-direction: column; }
-  .workspace-heading-copy { width: 100%; }
   .canvas-actions { width: 100%; justify-content: stretch; }
   .pose-action-groups { width: 100%; }
   .history-actions { width: 100%; min-width: 0; }
