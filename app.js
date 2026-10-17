@@ -1406,7 +1406,7 @@ function updateModeUi() {
   } else if (state.manualLabelMode) {
     tip.innerHTML = '<span aria-hidden="true">↖</span> ラベルをドラッグで移動、Wクリックで固定';
   } else {
-    tip.innerHTML = '<span aria-hidden="true">↖</span> 関節点をドラッグで移動';
+    tip.innerHTML = '<span aria-hidden="true">↖</span> 関節点をドラッグで移動。Wクリックでラベル切替';
   }
   requestAnimationFrame(syncCoordinateListToCanvas);
 }
