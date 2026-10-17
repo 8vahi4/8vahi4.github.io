@@ -446,6 +446,11 @@ h2 { font-size: 1.32rem; }
 }
 .label-option input { accent-color: var(--accent); }
 .label-option-full { grid-column: 1 / -1; }
+.label-option[data-label-part="head"] { background: #fdf6e4; }
+.label-option[data-label-part="rightArm"] { background: #e7e9ef; }
+.label-option[data-label-part="leftArm"] { background: #f7e7e4; }
+.label-option[data-label-part="rightLeg"] { background: #e7eee5; }
+.label-option[data-label-part="leftLeg"] { background: #ebe7ed; }
 
 .limb-editor { display: grid; gap: 10px; }
 .limb-add-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }

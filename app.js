@@ -909,6 +909,7 @@ function rebuildJointControls() {
       const joint = state.joints[key];
       const label = document.createElement("label");
       label.className = `label-option${isFullWidth ? " label-option-full" : ""}`;
+      label.dataset.labelPart = joint.part;
       label.innerHTML = `<input type="checkbox" data-label-joint="${key}"${state.labelVisibility[joint.label] ? " checked" : ""}><span>${joint.label}</span>`;
       labelContainer.appendChild(label);
 
